@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SCF.AI — Supply Chain Finance Console</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⛓</span>
+      <div>
+        <div class="brand-name">SCF.AI</div>
+        <div class="brand-sub">AI-Native Supply Chain Finance</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="#dashboard" class="nav-link active" data-tab="dashboard">Dashboard</a>
+      <a href="#new-invoice" class="nav-link" data-tab="new-invoice">New Invoice</a>
+      <a href="#agents" class="nav-link" data-tab="agents">Agent Console</a>
+      <a href="#programs" class="nav-link" data-tab="programs">Programs</a>
+      <a href="#companies" class="nav-link" data-tab="companies">Companies</a>
+    </nav>
+    <div class="rate-pill" title="Today's quoted base rate (annualised)">
+      <span class="rate-label">Base Rate</span>
+      <span id="base-rate-value" class="rate-value">--%</span>
+    </div>
+  </header>
+
+  <main class="content">
+    <!-- =================== DASHBOARD =================== -->
+    <section id="dashboard" class="tab-panel active">
+      <h1>Platform Overview</h1>
+      <div class="stat-grid" id="stat-grid"></div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Recent Agent Decisions</h2>
+          <span class="muted">Most recent 20 across all agents</span>
+        </div>
+        <div id="recent-decisions" class="event-feed"></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>Volumes by Status</h2>
+          <table class="data-table" id="status-table"></table>
+        </div>
+        <div class="card">
+          <h2>Volumes by Product</h2>
+          <table class="data-table" id="product-table"></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================== NEW INVOICE =================== -->
+    <section id="new-invoice" class="tab-panel">
+      <h1>Submit New Invoice</h1>
+      <p class="muted">
+        The Orchestration Agent will dispatch the invoice to the
+        Transaction Agent which routes it through the credit, review and
+        underwriting agents as needed.
+      </p>
+
+      <form id="invoice-form" class="card form-grid" autocomplete="off">
+        <label>
+          <span>Seller</span>
+          <input type="text" name="seller_name" id="seller-input" placeholder="Type to search..." required />
+          <div class="autocomplete" id="seller-suggestions"></div>
+        </label>
+
+        <label>
+          <span>Buyer</span>
+          <input type="text" name="buyer_name" id="buyer-input" placeholder="Type to search..." required />
+          <div class="autocomplete" id="buyer-suggestions"></div>
+        </label>
+
+        <label>
+          <span>Product</span>
+          <select name="product" id="product-select" required>
+            <option value="FACTORING">Factoring</option>
+            <option value="REVERSE_FACTORING">Reverse Factoring</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Amount</span>
+          <input type="number" name="amount" min="100" step="0.01" required />
+        </label>
+
+        <label>
+          <span>Currency</span>
+          <select name="currency" id="currency-select" required></select>
+        </label>
+
+        <label>
+          <span>Tenor (days)</span>
+          <select name="tenor_days" required>
+            <option value="30">30</option>
+            <option value="60">60</option>
+            <option value="90">90</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Grace Period (days)</span>
+          <input type="number" name="grace_period_days" value="0" min="0" max="30" />
+        </label>
+
+        <div class="form-actions">
+          <button type="submit" class="primary">Submit to Agents</button>
+          <button type="reset" class="ghost">Clear</button>
+        </div>
+      </form>
+
+      <div class="card" id="result-card" hidden>
+        <h2>Decision Trace</h2>
+        <div id="decision-summary"></div>
+        <h3>Agent Reasoning Trail</h3>
+        <div id="decision-events" class="event-feed"></div>
+      </div>
+    </section>
+
+    <!-- =================== AGENT CONSOLE =================== -->
+    <section id="agents" class="tab-panel">
+      <h1>Agent Activity Console</h1>
+      <div class="filters">
+        <label>
+          Agent
+          <select id="filter-agent">
+            <option value="">All</option>
+            <option>OrchestrationAgent</option>
+            <option>TransactionAgent</option>
+            <option>UnderwriterAgent</option>
+            <option>CreditLimitAgent</option>
+            <option>ReviewAgent</option>
+          </select>
+        </label>
+        <label>
+          Severity
+          <select id="filter-severity">
+            <option value="">All</option>
+            <option>INFO</option>
+            <option>DECISION</option>
+            <option>WARN</option>
+            <option>ERROR</option>
+          </select>
+        </label>
+        <button id="refresh-events" class="ghost">Refresh</button>
+      </div>
+      <div id="event-list" class="event-feed full"></div>
+    </section>
+
+    <!-- =================== PROGRAMS =================== -->
+    <section id="programs" class="tab-panel">
+      <h1>Programs</h1>
+      <p class="muted">Active buyer ↔ seller financing relationships</p>
+      <table class="data-table" id="programs-table">
+        <thead>
+          <tr>
+            <th>ID</th><th>Name</th><th>Product</th>
+            <th>Buyer</th><th>Seller</th>
+            <th>Limit (USD)</th><th>Used (USD)</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- =================== COMPANIES =================== -->
+    <section id="companies" class="tab-panel">
+      <h1>Companies</h1>
+      <div class="filters">
+        <input type="text" id="company-search" placeholder="Search by name..." />
+        <select id="company-role">
+          <option value="">All roles</option>
+          <option value="BUYER">Buyer</option>
+          <option value="SELLER">Seller</option>
+        </select>
+      </div>
+      <div class="grid-2">
+        <div>
+          <table class="data-table" id="companies-table">
+            <thead>
+              <tr>
+                <th>Name</th><th>Role</th><th>Industry</th><th>Country</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card" id="company-detail-card">
+          <p class="muted">Select a company to view its hierarchy, programs and credit profile.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>SCF.AI Demo · multi-agent orchestration · synthetic data only</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -28,6 +28,7 @@ function setupTabs() {
       if (tab === "programs") loadPrograms();
       if (tab === "companies") loadCompanies();
       if (tab === "dashboard") loadDashboard();
+      if (tab === "transactions") loadTransactions();
     });
   });
 }
@@ -121,11 +122,13 @@ async function loadPrograms() {
       <td>${fmtUsd(p.credit_limit_usd)}</td>
       <td>${fmtUsd(p.utilised_usd)}</td>
       <td><span class="badge ${p.status}">${p.status}</span></td>
+      <td><button class="ghost explain-btn" data-id="${p.id}">Explain</button></td>
     </tr>
   `).join("");
+
   tbody.querySelectorAll("tr").forEach((tr) => {
-    tr.addEventListener("click", () => {
-      // Switch to companies tab and load buyer
+    tr.addEventListener("click", (ev) => {
+      if (ev.target.classList.contains("explain-btn")) return;
       const id = tr.dataset.id;
       const program = data.items.find((x) => x.id == id);
       if (program) {
@@ -134,6 +137,166 @@ async function loadPrograms() {
       }
     });
   });
+  tbody.querySelectorAll(".explain-btn").forEach((btn) => {
+    btn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset.id;
+      const card = $("#programs-facility-card");
+      const body = $("#programs-facility-body");
+      card.hidden = false;
+      body.innerHTML = `<div class="muted">Loading explanation...</div>`;
+      const data = await fetch(`/api/programs/${id}/facility`).then((r) => r.json());
+      $("#programs-facility-title").textContent = `Facility Limit Explanation — ${data.program.name}`;
+      body.innerHTML = renderFacility(data);
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+}
+
+function renderFacility(data) {
+  const t = data.totals;
+  const fxRows = data.open_invoices_by_currency
+    .sort((a, b) => b.amount_usd - a.amount_usd)
+    .map((r) => `
+      <tr>
+        <td><span class="badge">${r.currency}</span></td>
+        <td>${r.count}</td>
+        <td>${r.amount_native.toLocaleString()} ${r.currency}</td>
+        <td>${r.fx_to_usd}</td>
+        <td>${fmtUsd(r.amount_usd)}</td>
+      </tr>
+    `).join("") || `<tr><td colspan="5" class="muted">No live invoices.</td></tr>`;
+
+  const buyerBreakdown = Object.entries(data.buyer_hierarchy_breakdown)
+    .map(([k, v]) => `<tr><td>${k}</td><td>${fmtUsd(v)}</td></tr>`).join("");
+  const sellerBreakdown = Object.entries(data.seller_hierarchy_breakdown)
+    .map(([k, v]) => `<tr><td>${k}</td><td>${fmtUsd(v)}</td></tr>`).join("");
+
+  const stepsHtml = data.explanation.map((s) => `
+    <div class="step">
+      <div class="step-num">${s.step}</div>
+      <div>
+        <div class="step-title">${s.title}</div>
+        <div class="step-detail">${s.detail.replaceAll("**", "")}</div>
+      </div>
+    </div>
+  `).join("");
+
+  return `
+    <div class="kv">
+      <div class="k">Program</div><div>#${data.program.id} · ${data.program.name}</div>
+      <div class="k">Product</div><div><span class="badge">${data.program.product}</span></div>
+      <div class="k">Buyer</div><div>${data.program.buyer.name}</div>
+      <div class="k">Seller</div><div>${data.program.seller.name}</div>
+      <div class="k">Bilateral limit</div><div>${fmtUsd(t.program_limit_usd)}</div>
+      <div class="k">Utilised</div><div>${fmtUsd(t.program_utilised_usd)}</div>
+      <div class="k">Program headroom</div><div>${fmtUsd(t.program_headroom_usd)}</div>
+      <div class="k">Buyer subtree headroom</div><div>${fmtUsd(t.buyer_subtree_headroom_usd)}</div>
+      <div class="k">Seller subtree headroom</div><div>${fmtUsd(t.seller_subtree_headroom_usd)}</div>
+      <div class="k">Binding constraint</div>
+      <div><span class="badge REVIEW">${t.binding_constraint}</span> at ${fmtUsd(t.binding_headroom_usd)}</div>
+    </div>
+
+    <div class="section-title">Live Invoices Aggregated by Currency</div>
+    <table class="data-table">
+      <thead><tr><th>Currency</th><th>Count</th><th>Native amount</th><th>FX → USD</th><th>USD</th></tr></thead>
+      <tbody>${fxRows}</tbody>
+      <tfoot><tr><td colspan="4"><strong>Total open exposure</strong></td><td><strong>${fmtUsd(t.open_amount_usd)}</strong></td></tr></tfoot>
+    </table>
+
+    <div class="section-title">Step-by-step Reasoning</div>
+    <div class="steps">${stepsHtml}</div>
+
+    <div class="grid-2">
+      <div>
+        <div class="section-title">Buyer Hierarchical Breakdown</div>
+        <table class="data-table">
+          <thead><tr><th>Limit (ancestor : product)</th><th>Headroom</th></tr></thead>
+          <tbody>${buyerBreakdown || `<tr><td colspan="2" class="muted">—</td></tr>`}</tbody>
+        </table>
+      </div>
+      <div>
+        <div class="section-title">Seller Hierarchical Breakdown</div>
+        <table class="data-table">
+          <thead><tr><th>Limit (ancestor : product)</th><th>Headroom</th></tr></thead>
+          <tbody>${sellerBreakdown || `<tr><td colspan="2" class="muted">—</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// ---------- transactions ----------
+async function loadTransactions() {
+  const data = await fetch("/api/transactions/summary").then((r) => r.json());
+  const t = data.totals;
+  $("#tx-stat-grid").innerHTML = `
+    <div class="stat"><div class="stat-label">Invoices</div><div class="stat-value">${t.invoice_count.toLocaleString()}</div><div class="stat-sub">all-time</div></div>
+    <div class="stat"><div class="stat-label">Total Volume</div><div class="stat-value">${fmtUsd(t.amount_usd)}</div><div class="stat-sub">USD-equivalent</div></div>
+    <div class="stat"><div class="stat-label">Funded</div><div class="stat-value">${fmtUsd(t.funded_usd)}</div><div class="stat-sub">net of fees</div></div>
+    <div class="stat"><div class="stat-label">Fees Earned</div><div class="stat-value">${fmtUsd(t.fee_usd)}</div><div class="stat-sub">platform revenue</div></div>
+    <div class="stat"><div class="stat-label">Base Rate</div><div class="stat-value">${(data.base_rate*100).toFixed(2)}%</div><div class="stat-sub">today's quote</div></div>
+  `;
+
+  const sRows = Object.entries(data.by_status)
+    .sort((a,b) => b[1].count - a[1].count)
+    .map(([s, v]) => `<tr><td><span class="badge ${s}">${s}</span></td><td>${v.count.toLocaleString()}</td><td>${fmtUsd(v.amount_usd)}</td><td>${fmtUsd(v.fee_usd)}</td></tr>`)
+    .join("");
+  $("#tx-status-table").innerHTML = `<thead><tr><th>Status</th><th>Count</th><th>Amount</th><th>Fees</th></tr></thead><tbody>${sRows}</tbody>`;
+
+  const pRows = Object.entries(data.by_product)
+    .map(([p, v]) => `<tr><td>${p.replaceAll("_"," ")}</td><td>${v.count.toLocaleString()}</td><td>${fmtUsd(v.amount_usd)}</td><td>${fmtUsd(v.fee_usd)}</td></tr>`)
+    .join("");
+  $("#tx-product-table").innerHTML = `<thead><tr><th>Product</th><th>Count</th><th>Amount (USD)</th><th>Fees (USD)</th></tr></thead><tbody>${pRows}</tbody>`;
+
+  const cRows = Object.entries(data.by_currency)
+    .sort((a,b) => b[1].count - a[1].count)
+    .map(([c, v]) => `<tr><td><span class="badge">${c}</span></td><td>${v.count.toLocaleString()}</td><td>${v.amount_native.toLocaleString()} ${c}</td></tr>`)
+    .join("");
+  $("#tx-currency-table").innerHTML = `<thead><tr><th>Currency</th><th>Count</th><th>Native amount</th></tr></thead><tbody>${cRows}</tbody>`;
+
+  const topRows = data.top_programs.map((p) => `
+    <tr data-id="${p.program_id}">
+      <td>#${p.program_id} · ${p.name}</td>
+      <td><span class="badge">${p.product.replaceAll("_"," ")}</span></td>
+      <td>${p.buyer.name}</td>
+      <td>${p.seller.name}</td>
+      <td>${p.invoice_count.toLocaleString()}</td>
+      <td>${fmtUsd(p.amount_usd)}</td>
+      <td><button class="ghost tx-explain-btn" data-id="${p.program_id}">Explain</button></td>
+    </tr>
+  `).join("");
+  $("#tx-top-programs-table tbody").innerHTML = topRows;
+
+  $$("#tx-top-programs-table .tx-explain-btn").forEach((btn) => {
+    btn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset.id;
+      const card = $("#facility-card");
+      const body = $("#facility-explanation");
+      card.hidden = false;
+      body.innerHTML = `<div class="muted">Loading explanation...</div>`;
+      const fdata = await fetch(`/api/programs/${id}/facility`).then((r) => r.json());
+      $("#facility-card-title").textContent = `Facility Limit Explanation — ${fdata.program.name}`;
+      body.innerHTML = renderFacility(fdata);
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+
+  // recent invoices
+  const recRows = data.recent_invoices.map((inv) => `
+    <tr>
+      <td>#${inv.id}</td>
+      <td>${inv.invoice_number}</td>
+      <td>${inv.seller.name}</td>
+      <td>${inv.buyer.name}</td>
+      <td>${inv.product.replaceAll("_"," ")}</td>
+      <td>${inv.amount.toLocaleString()} ${inv.currency}</td>
+      <td>${fmtUsd(inv.amount_usd)}</td>
+      <td><span class="badge ${inv.status}">${inv.status}</span></td>
+    </tr>
+  `).join("");
+  $("#tx-recent-table tbody").innerHTML = recRows;
 }
 
 // ---------- companies ----------

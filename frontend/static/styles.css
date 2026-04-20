@@ -199,3 +199,23 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .footer { padding: 18px; text-align: center; color: var(--muted); font-size: 12px; }
 
 .section-title { margin-top: 14px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+
+.steps { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 16px; }
+.step {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-soft);
+}
+.step-num {
+  flex: 0 0 32px; height: 32px; width: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #0a0f1d; font-weight: 700;
+}
+.step-title { font-weight: 600; margin-bottom: 4px; color: var(--text); }
+.step-detail { font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+.data-table tfoot td { padding: 10px 12px; border-top: 2px solid var(--border); }
+
+.explain-btn, .tx-explain-btn { padding: 4px 10px; font-size: 12px; }
+

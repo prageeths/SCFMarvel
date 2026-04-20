@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Optional
+from typing import Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,37 @@ _RATING_BANDS = [
     ("B",   0.0700, 0.0380),
     ("CCC", 1.0000, 0.0600),
 ]
+
+RATING_LADDER = [b[0] for b in _RATING_BANDS]
+RATING_SPREAD = {b[0]: b[2] for b in _RATING_BANDS}
+RATING_PD = {b[0]: max(0.0001, b[1] * 0.6) for b in _RATING_BANDS}
+
+# Companies (or any entity in their corporate tree) that should be force-rated
+# at AA / AAA regardless of synthetic PD math.  Match is by case-insensitive
+# substring against the company's name OR any ancestor's name.
+NAMED_MAJORS_AAA = {
+    "Walmart",
+    "Amazon",
+    "Coca-Cola",
+}
+NAMED_MAJORS_AA = {
+    "Target",
+    "Kroger",
+    "Albertsons",
+    "Jewel-Osco",
+    "Costco",
+    "Best Buy",
+    "CVS",
+    "Walgreens",
+    "Publix",
+    "PepsiCo",
+    "Pepsi",
+}
+
+# Revenue thresholds (USD)
+THRESHOLD_AA_REVENUE = 100_000_000_000.0   # >= $100B  -> at least AA (AAA above $250B)
+THRESHOLD_AAA_REVENUE = 250_000_000_000.0
+THRESHOLD_B_MAX_REVENUE = 5_000_000.0      # <  $5M    -> capped at B (or CCC)
 
 _INDUSTRY_RISK = {
     "Food & Beverage": 0.002,
@@ -45,6 +76,74 @@ _COUNTRY_RISK = {
 }
 
 
+def _max_revenue_in_tree(company: models.Company) -> float:
+    """Largest annual revenue across the company AND any of its ancestors."""
+    best = float(company.annual_revenue_usd or 0.0)
+    cursor = company.parent
+    seen = set()
+    while cursor is not None and cursor.id not in seen:
+        seen.add(cursor.id)
+        if cursor.annual_revenue_usd:
+            best = max(best, float(cursor.annual_revenue_usd))
+        cursor = cursor.parent
+    return best
+
+
+def _named_major_band(company: models.Company) -> Optional[str]:
+    """Return 'AAA', 'AA', or None based on the company (and ancestors') name."""
+    names = [company.name or ""]
+    cursor = company.parent
+    seen = set()
+    while cursor is not None and cursor.id not in seen:
+        seen.add(cursor.id)
+        names.append(cursor.name or "")
+        cursor = cursor.parent
+    blob = " | ".join(names).lower()
+
+    for tag in NAMED_MAJORS_AAA:
+        if tag.lower() in blob:
+            return "AAA"
+    for tag in NAMED_MAJORS_AA:
+        if tag.lower() in blob:
+            return "AA"
+    return None
+
+
+def _apply_policy(
+    base_rating: str, company: models.Company
+) -> Tuple[str, str]:
+    """Return (final_rating, reason) after applying the policy overrides."""
+    reasons = []
+    final = base_rating
+
+    named = _named_major_band(company)
+    if named is not None:
+        # Move up to at least the named-major floor.
+        if RATING_LADDER.index(named) < RATING_LADDER.index(final):
+            reasons.append(f"named-major floor → {named}")
+            final = named
+
+    max_rev = _max_revenue_in_tree(company)
+    if max_rev >= THRESHOLD_AAA_REVENUE:
+        if RATING_LADDER.index("AAA") < RATING_LADDER.index(final):
+            reasons.append(f"revenue ${max_rev/1e9:.0f}B ≥ $250B → AAA")
+            final = "AAA"
+    elif max_rev >= THRESHOLD_AA_REVENUE:
+        if RATING_LADDER.index("AA") < RATING_LADDER.index(final):
+            reasons.append(f"revenue ${max_rev/1e9:.0f}B ≥ $100B → AA")
+            final = "AA"
+
+    own_rev = float(company.annual_revenue_usd or 0.0)
+    if own_rev > 0 and own_rev < THRESHOLD_B_MAX_REVENUE:
+        # Cap at B (no better) for tiny companies.
+        if RATING_LADDER.index(final) < RATING_LADDER.index("B"):
+            reasons.append(f"revenue ${own_rev/1e6:.2f}M < $5M → cap at B")
+            final = "B"
+
+    reason = "; ".join(reasons) if reasons else "model-derived"
+    return final, reason
+
+
 class UnderwriterAgent:
     """Builds (or refreshes) the risk profile and global/product credit lines."""
 
@@ -65,39 +164,48 @@ class UnderwriterAgent:
             min(0.20, size_factor * 0.05 + leverage * 0.04 + industry_risk + country_risk),
         )
 
-        rating = "CCC"
-        spread = 0.06
-        for band_rating, max_pd, band_spread in _RATING_BANDS:
+        base_rating = "CCC"
+        for band_rating, max_pd, _band_spread in _RATING_BANDS:
             if pd_1y <= max_pd:
-                rating = band_rating
-                spread = band_spread
+                base_rating = band_rating
                 break
 
-        # Add a small random jitter to the spread so different companies in the
-        # same band don't all look identical.
-        spread = round(spread + rng.uniform(-0.0015, 0.0030), 4)
-        spread = max(0.0025, spread)
+        # Apply named-major / revenue / floor / cap policy.
+        rating, policy_reason = _apply_policy(base_rating, company)
+
+        # Spread comes from the *final* rating band so it stays consistent.
+        # Tiny random jitter so two AAA names don't look identical.
+        spread = RATING_SPREAD[rating] + rng.uniform(-0.0008, 0.0015)
+        spread = round(max(0.0025, spread), 4)
+
+        # Re-derive a representative PD from the final band (so the dashboard
+        # and the rating agree even after a policy override).
+        final_pd = RATING_PD[rating]
 
         existing = company.risk_profile
+        notes = (
+            f"Base model rating={base_rating} (PD={pd_1y:.2%}); "
+            f"final rating={rating} via {policy_reason}."
+        )
         if existing:
             existing.rating = rating
-            existing.pd_1y = pd_1y
+            existing.pd_1y = final_pd
             existing.credit_spread = spread
             existing.industry_risk = industry_risk
             existing.country_risk = country_risk
             existing.leverage_score = leverage
-            existing.notes = "Re-rated by UnderwriterAgent"
+            existing.notes = notes
             profile = existing
         else:
             profile = models.RiskProfile(
                 company_id=company.id,
                 rating=rating,
-                pd_1y=pd_1y,
+                pd_1y=final_pd,
                 credit_spread=spread,
                 industry_risk=industry_risk,
                 country_risk=country_risk,
                 leverage_score=leverage,
-                notes="Initial profile by UnderwriterAgent",
+                notes=notes,
             )
             db.add(profile)
 
@@ -105,10 +213,17 @@ class UnderwriterAgent:
             db,
             NAME,
             "RISK_PROFILED",
-            f"Profiled {company.name}: rating={rating} spread={spread:.2%} pd_1y={pd_1y:.2%}",
+            f"Profiled {company.name}: rating={rating} spread={spread:.2%} ({policy_reason}).",
             severity="DECISION",
             company_id=company.id,
-            payload={"rating": rating, "spread": spread, "pd_1y": pd_1y},
+            payload={
+                "rating": rating,
+                "base_rating": base_rating,
+                "spread": spread,
+                "pd_1y": final_pd,
+                "policy_reason": policy_reason,
+                "max_revenue_in_tree": _max_revenue_in_tree(company),
+            },
         )
         return profile
 

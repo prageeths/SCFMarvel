@@ -18,6 +18,7 @@
     <nav class="nav">
       <a href="#dashboard" class="nav-link active" data-tab="dashboard">Dashboard</a>
       <a href="#new-invoice" class="nav-link" data-tab="new-invoice">New Invoice</a>
+      <a href="#transactions" class="nav-link" data-tab="transactions">Transactions</a>
       <a href="#agents" class="nav-link" data-tab="agents">Agent Console</a>
       <a href="#programs" class="nav-link" data-tab="programs">Programs</a>
       <a href="#companies" class="nav-link" data-tab="companies">Companies</a>
@@ -122,6 +123,75 @@
       </div>
     </section>
 
+    <!-- =================== TRANSACTIONS =================== -->
+    <section id="transactions" class="tab-panel">
+      <h1>Transactions Summary</h1>
+      <p class="muted">
+        Roll-up of all invoice activity. Click any program in the
+        <em>Top Programs by Volume</em> table to see a step-by-step
+        explanation of how its facility limits are calculated — including
+        how mixed-currency invoices are normalised before any limit check.
+      </p>
+
+      <div class="stat-grid" id="tx-stat-grid"></div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>By Status</h2>
+          <table class="data-table" id="tx-status-table"></table>
+        </div>
+        <div class="card">
+          <h2>By Product</h2>
+          <table class="data-table" id="tx-product-table"></table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>By Currency</h2>
+          <span class="muted">Native amounts; converted to USD at booking time</span>
+        </div>
+        <table class="data-table" id="tx-currency-table"></table>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Top Programs by Volume</h2>
+          <span class="muted">Click a row to see the facility-limit explanation</span>
+        </div>
+        <table class="data-table" id="tx-top-programs-table">
+          <thead>
+            <tr>
+              <th>Program</th><th>Product</th><th>Buyer</th><th>Seller</th>
+              <th>Invoices</th><th>Volume (USD)</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Recent Invoices</h2>
+          <span class="muted">Newest first</span>
+        </div>
+        <table class="data-table" id="tx-recent-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Invoice</th><th>Seller</th><th>Buyer</th>
+              <th>Product</th><th>Amount</th><th>USD</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="card" id="facility-card" hidden>
+        <h2 id="facility-card-title">Facility Limit Explanation</h2>
+        <div id="facility-explanation"></div>
+      </div>
+    </section>
+
     <!-- =================== AGENT CONSOLE =================== -->
     <section id="agents" class="tab-panel">
       <h1>Agent Activity Console</h1>
@@ -156,16 +226,21 @@
     <section id="programs" class="tab-panel">
       <h1>Programs</h1>
       <p class="muted">Active buyer ↔ seller financing relationships</p>
+      <p class="muted">Newest first. Click a row to view the buyer's company profile, or <em>Explain</em> to see the facility-limit math.</p>
       <table class="data-table" id="programs-table">
         <thead>
           <tr>
             <th>ID</th><th>Name</th><th>Product</th>
             <th>Buyer</th><th>Seller</th>
-            <th>Limit (USD)</th><th>Used (USD)</th><th>Status</th>
+            <th>Limit (USD)</th><th>Used (USD)</th><th>Status</th><th></th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+      <div class="card" id="programs-facility-card" hidden>
+        <h2 id="programs-facility-title">Facility Limit Explanation</h2>
+        <div id="programs-facility-body"></div>
+      </div>
     </section>
 
     <!-- =================== COMPANIES =================== -->

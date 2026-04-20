@@ -137,6 +137,7 @@ def company_detail(company_id: int, db: Session = Depends(get_db)) -> dict:
             (models.Program.buyer_id == company_id)
             | (models.Program.seller_id == company_id)
         )
+        .order_by(models.Program.id.desc())
         .all()
     )
 
@@ -380,6 +381,268 @@ def list_events(
             }
             for e in rows
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Explainability — facility check trace
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/programs/{program_id}/facility")
+def program_facility_check(
+    program_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return a transparent breakdown of the facility-limit math for a program.
+
+    Demonstrates how invoices in mixed currencies are checked: every invoice
+    amount is converted to USD via :data:`FX_TO_USD`, then aggregated against
+    the program's bilateral limit, the buyer subtree's hierarchical limits,
+    and the seller subtree's hierarchical limits.
+    """
+    from .agents.credit_limit import CreditLimitAgent
+    from .config import FX_TO_USD
+
+    program = db.query(models.Program).get(program_id)
+    if not program:
+        raise HTTPException(404, f"Program {program_id} not found")
+
+    # All non-rejected invoices count toward utilisation.
+    invoices = (
+        db.query(models.Invoice)
+        .filter(models.Invoice.program_id == program_id)
+        .order_by(models.Invoice.id.desc())
+        .all()
+    )
+    open_invoices = [i for i in invoices if i.status in ("FUNDED", "APPROVED", "REVIEW")]
+
+    # Per-currency rollup so we can show "5 invoices in EUR + 3 in USD"
+    by_currency: dict = {}
+    for inv in open_invoices:
+        b = by_currency.setdefault(
+            inv.currency,
+            {
+                "currency": inv.currency,
+                "count": 0,
+                "amount_native": 0.0,
+                "fx_to_usd": FX_TO_USD.get(inv.currency, 1.0),
+                "amount_usd": 0.0,
+            },
+        )
+        b["count"] += 1
+        b["amount_native"] = round(b["amount_native"] + inv.amount, 2)
+        b["amount_usd"] = round(b["amount_usd"] + inv.amount_usd, 2)
+
+    total_open_usd = round(sum(b["amount_usd"] for b in by_currency.values()), 2)
+
+    program_limit = program.credit_limit_usd
+    program_used = program.utilised_usd
+    program_headroom = round(program_limit - program_used, 2)
+
+    buyer_headroom, buyer_breakdown = CreditLimitAgent.hierarchical_headroom(
+        db, program.buyer, program.product
+    )
+    seller_headroom, seller_breakdown = CreditLimitAgent.hierarchical_headroom(
+        db, program.seller, program.product
+    )
+
+    binding = min(program_headroom, buyer_headroom, seller_headroom)
+    if binding == program_headroom:
+        binding_constraint = "program_limit"
+    elif binding == buyer_headroom:
+        binding_constraint = "buyer_hierarchical_limit"
+    else:
+        binding_constraint = "seller_hierarchical_limit"
+
+    explanation_steps = [
+        {
+            "step": 1,
+            "title": "Normalise every invoice to USD",
+            "detail": (
+                f"This program holds {len(open_invoices)} live invoices across "
+                f"{len(by_currency)} currencies. Each invoice's native amount is "
+                f"converted to USD using today's FX snapshot before any limit math "
+                f"is performed. Total open exposure: ${total_open_usd:,.2f}."
+            ),
+        },
+        {
+            "step": 2,
+            "title": "Bilateral program limit",
+            "detail": (
+                f"Program '{program.name}' carries a ${program_limit:,.2f} bilateral "
+                f"limit. Currently utilised: ${program_used:,.2f}. "
+                f"Headroom: ${program_headroom:,.2f}."
+            ),
+        },
+        {
+            "step": 3,
+            "title": "Buyer hierarchical envelope",
+            "detail": (
+                f"Walk up the buyer's corporate tree. At each ancestor, sum the "
+                f"USD utilisation of the entire subtree against that ancestor's "
+                f"GLOBAL and {program.product} limits — the smallest available "
+                f"headroom wins. Tightest buyer-side headroom: ${buyer_headroom:,.2f}."
+            ),
+        },
+        {
+            "step": 4,
+            "title": "Seller hierarchical envelope",
+            "detail": (
+                f"Repeat the same walk for the seller's tree. Tightest seller-side "
+                f"headroom: ${seller_headroom:,.2f}."
+            ),
+        },
+        {
+            "step": 5,
+            "title": "Binding constraint",
+            "detail": (
+                f"Approve any new invoice whose USD-equivalent ≤ the smallest of "
+                f"the three headrooms above. Today the **{binding_constraint}** is "
+                f"binding at ${binding:,.2f}."
+            ),
+        },
+    ]
+
+    return {
+        "program": {
+            "id": program.id,
+            "name": program.name,
+            "product": program.product,
+            "buyer": _company_to_mini(program.buyer),
+            "seller": _company_to_mini(program.seller),
+            "credit_limit_usd": program_limit,
+            "utilised_usd": program_used,
+            "headroom_usd": program_headroom,
+            "status": program.status,
+        },
+        "fx_snapshot": FX_TO_USD,
+        "open_invoices_by_currency": list(by_currency.values()),
+        "open_invoices": [_invoice_to_dict(inv) for inv in open_invoices[:50]],
+        "totals": {
+            "open_invoice_count": len(open_invoices),
+            "open_amount_usd": total_open_usd,
+            "program_limit_usd": program_limit,
+            "program_utilised_usd": program_used,
+            "program_headroom_usd": program_headroom,
+            "buyer_subtree_headroom_usd": buyer_headroom,
+            "seller_subtree_headroom_usd": seller_headroom,
+            "binding_headroom_usd": binding,
+            "binding_constraint": binding_constraint,
+        },
+        "buyer_hierarchy_breakdown": buyer_breakdown,
+        "seller_hierarchy_breakdown": seller_breakdown,
+        "explanation": explanation_steps,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Transactions summary tab
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/transactions/summary")
+def transactions_summary(db: Session = Depends(get_db)) -> dict:
+    """Aggregations powering the dedicated 'Transactions' tab."""
+    from sqlalchemy import func
+
+    total = db.query(func.count(models.Invoice.id)).scalar() or 0
+
+    # Overall money flows (USD)
+    total_amount = db.query(func.sum(models.Invoice.amount_usd)).scalar() or 0.0
+    total_fees = db.query(func.sum(models.Invoice.fee_usd)).scalar() or 0.0
+    total_funded = db.query(func.sum(models.Invoice.funded_amount_usd)).scalar() or 0.0
+
+    # By status + product
+    by_status = {}
+    for s, c, a, f in db.query(
+        models.Invoice.status,
+        func.count(models.Invoice.id),
+        func.sum(models.Invoice.amount_usd),
+        func.sum(models.Invoice.fee_usd),
+    ).group_by(models.Invoice.status).all():
+        by_status[s] = {
+            "count": int(c or 0),
+            "amount_usd": round(float(a or 0.0), 2),
+            "fee_usd": round(float(f or 0.0), 2),
+        }
+
+    by_product = {}
+    for p, c, a, f in db.query(
+        models.Invoice.product,
+        func.count(models.Invoice.id),
+        func.sum(models.Invoice.amount_usd),
+        func.sum(models.Invoice.fee_usd),
+    ).group_by(models.Invoice.product).all():
+        by_product[p] = {
+            "count": int(c or 0),
+            "amount_usd": round(float(a or 0.0), 2),
+            "fee_usd": round(float(f or 0.0), 2),
+        }
+
+    by_currency = {}
+    for cur, c, a in db.query(
+        models.Invoice.currency,
+        func.count(models.Invoice.id),
+        func.sum(models.Invoice.amount),
+    ).group_by(models.Invoice.currency).all():
+        by_currency[cur] = {
+            "count": int(c or 0),
+            "amount_native": round(float(a or 0.0), 2),
+        }
+
+    # Top 10 programs by total USD flow
+    top_programs_rows = (
+        db.query(
+            models.Invoice.program_id,
+            func.count(models.Invoice.id),
+            func.sum(models.Invoice.amount_usd),
+        )
+        .filter(models.Invoice.program_id.isnot(None))
+        .group_by(models.Invoice.program_id)
+        .order_by(func.sum(models.Invoice.amount_usd).desc())
+        .limit(10)
+        .all()
+    )
+    top_programs = []
+    for pid, cnt, amt in top_programs_rows:
+        prog = db.query(models.Program).get(pid)
+        if prog is None:
+            continue
+        top_programs.append(
+            {
+                "program_id": pid,
+                "name": prog.name,
+                "product": prog.product,
+                "buyer": _company_to_mini(prog.buyer),
+                "seller": _company_to_mini(prog.seller),
+                "invoice_count": int(cnt or 0),
+                "amount_usd": round(float(amt or 0.0), 2),
+            }
+        )
+
+    # Newest 25 invoices for the activity strip
+    recent_invoices = (
+        db.query(models.Invoice)
+        .order_by(models.Invoice.id.desc())
+        .limit(25)
+        .all()
+    )
+
+    return {
+        "as_of": _dt.datetime.utcnow().isoformat(),
+        "base_rate": BASE_RATE,
+        "totals": {
+            "invoice_count": int(total),
+            "amount_usd": round(float(total_amount), 2),
+            "fee_usd": round(float(total_fees), 2),
+            "funded_usd": round(float(total_funded), 2),
+        },
+        "by_status": by_status,
+        "by_product": by_product,
+        "by_currency": by_currency,
+        "top_programs": top_programs,
+        "recent_invoices": [_invoice_to_dict(inv) for inv in recent_invoices],
     }
 
 

@@ -136,6 +136,65 @@ After seeding, in the dashboard:
 | `ALLOWED_TENORS`    | `[30, 60, 90]` | Form & validator both honour this    |
 | `DATABASE_URL`      | `sqlite:///data/scf.db` | Override with `SCF_DB_URL`        |
 
+## Rating policy
+
+The Underwriter Agent applies the following floors / caps on top of its
+synthetic PD model (see `backend/app/agents/underwriter.py`):
+
+| Trigger                                                         | Effect                |
+|-----------------------------------------------------------------|-----------------------|
+| Annual revenue (anywhere in the corporate tree) ≥ **$250B**     | Floor at **AAA**      |
+| Annual revenue (anywhere in the corporate tree) ≥ **$100B**     | Floor at **AA**       |
+| Named-major: Walmart, Amazon, Coca-Cola (any node in the tree)  | Floor at **AAA**      |
+| Named-major: Target, Kroger, Albertsons, Jewel-Osco, Costco, Best Buy, CVS, Walgreens, Publix, PepsiCo (any node) | Floor at **AA** |
+| Own annual revenue **< $5M**                                    | Cap at **B**          |
+
+Re-rate the entire roster (and re-price historical invoices to match) without
+re-seeding:
+
+```bash
+python -m backend.rerate
+```
+
+The rerate script also seeds a handful of micro-cap (<$5M revenue) demo
+suppliers (`Cedar & Sons Roastery`, `Brookline Artisan Snacks`, ...) so the
+small-cap floor is observable in the dashboard.
+
+## Explainability
+
+Every program exposes a transparent facility-limit trace at
+`GET /api/programs/{id}/facility`. The response shows:
+
+1. All live invoices aggregated **by currency**, with the FX rate used and
+   the per-currency USD-equivalent.
+2. The bilateral program limit (limit, utilised, headroom).
+3. The **buyer hierarchical envelope** — for every ancestor in the buyer's
+   corporate tree, the headroom against both that ancestor's GLOBAL and
+   product-specific limits, with subtree utilisation rolled up.
+4. The same walk for the **seller** subtree.
+5. The **binding constraint** — whichever of the three headrooms is tightest
+   right now.
+
+This is rendered on the `Transactions` and `Programs` tabs as an "Explain"
+button on each program row, producing a step-by-step reasoning panel with
+per-currency aggregation, hierarchical breakdown tables, and the binding
+constraint highlighted.
+
+### Worked example
+
+For program `Cargill Inc → Jewel-Osco (REVERSE_FACTORING)` with 9 live
+invoices in COP / BRL / CAD / MXN, the panel shows:
+
+- Step 1 normalises every invoice into USD via `FX_TO_USD` →
+  total open exposure $613,696.
+- Step 2 reports the bilateral program limit ($20,436,594) and current
+  utilisation, leaving program headroom $19,822,898.
+- Step 3 walks the buyer tree (Jewel-Osco → Albertsons Companies),
+  taking the *minimum* headroom across both `REVERSE_FACTORING` and
+  `GLOBAL` limits at each level. The tightest buyer-side headroom wins.
+- Step 4 does the same for the seller (Cargill).
+- Step 5 names the binding constraint — here `program_limit` at $19.8M.
+
 ## Notes on agent design
 
 The agents are deliberately *deterministic, transparent rules-engines*

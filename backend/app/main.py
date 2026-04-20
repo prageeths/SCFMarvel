@@ -75,6 +75,30 @@ def get_meta() -> dict:
             {"value": PRODUCT_FACTORING, "label": "Factoring"},
             {"value": PRODUCT_REVERSE_FACTORING, "label": "Reverse Factoring"},
         ],
+        "countries": [
+            {"code": "US", "name": "United States"},
+            {"code": "CA", "name": "Canada"},
+            {"code": "MX", "name": "Mexico"},
+            {"code": "BR", "name": "Brazil"},
+            {"code": "CO", "name": "Colombia"},
+            {"code": "GB", "name": "United Kingdom"},
+            {"code": "DE", "name": "Germany"},
+            {"code": "FR", "name": "France"},
+            {"code": "JP", "name": "Japan"},
+        ],
+        "industries": [
+            "Food & Beverage",
+            "Retail",
+            "Pharmaceuticals",
+            "Consumer Electronics",
+            "Apparel",
+            "Home Goods",
+            "Logistics",
+            "Packaging",
+            "Ingredients",
+            "Watches & Accessories",
+            "Industrial",
+        ],
         "as_of": _dt.datetime.utcnow().isoformat(),
     }
 
@@ -111,6 +135,86 @@ def _company_to_row(c: models.Company) -> dict:
         "credit_spread": rp.credit_spread if rp else None,
         "pd_1y": rp.pd_1y if rp else None,
         "parent_name": c.parent.name if c.parent else None,
+    }
+
+
+@app.get("/api/companies/exists")
+def company_exists(
+    name: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Light existence check used by the New Invoice form.
+
+    Returns ``{exists: bool, company: {id, name, rating, ...} | null,
+    suggestions: [top 5 fuzzy matches]}``.
+    """
+    norm = name.strip()
+    exact = (
+        db.query(models.Company)
+        .filter(models.Company.name == norm)
+        .one_or_none()
+    )
+    if exact is None:
+        exact = (
+            db.query(models.Company)
+            .filter(models.Company.name.ilike(norm))
+            .first()
+        )
+
+    suggestions = []
+    if exact is None:
+        rows = (
+            db.query(models.Company)
+            .filter(models.Company.name.ilike(f"%{norm}%"))
+            .order_by(models.Company.name.asc())
+            .limit(5)
+            .all()
+        )
+        suggestions = [_company_to_row(c) for c in rows]
+
+    return {
+        "exists": exact is not None,
+        "company": _company_to_row(exact) if exact else None,
+        "suggestions": suggestions,
+    }
+
+
+@app.post("/api/companies")
+def create_company(
+    payload: schemas.CompanyOnboard,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Create a new company and let the Underwriter + Credit Limit agents
+    produce the full risk profile + global/product credit lines."""
+    try:
+        company = OrchestrationAgent.onboard_company(db, payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    db.commit()
+    db.refresh(company)
+
+    # Collect the events this onboarding produced so the UI can show the
+    # agent reasoning inline.
+    events = (
+        db.query(models.AgentEvent)
+        .filter(models.AgentEvent.company_id == company.id)
+        .order_by(models.AgentEvent.id.asc())
+        .all()
+    )
+
+    return {
+        "company": company_detail(company.id, db),
+        "events": [
+            {
+                "id": e.id,
+                "timestamp": e.timestamp.isoformat(),
+                "agent": e.agent,
+                "action": e.action,
+                "severity": e.severity,
+                "message": e.message,
+            }
+            for e in events
+        ],
     }
 
 
@@ -221,6 +325,7 @@ def company_detail(company_id: int, db: Session = Depends(get_db)) -> dict:
                 "industry_risk": rp.industry_risk,
                 "country_risk": rp.country_risk,
                 "leverage_score": rp.leverage_score,
+                "notes": rp.notes,
                 "last_reviewed": rp.last_reviewed.isoformat(),
             }
             if rp
@@ -319,7 +424,17 @@ def submit_invoice(
     try:
         invoice = OrchestrationAgent.submit_invoice(db, payload)
     except CompanyNotFoundError as exc:
-        raise HTTPException(404, str(exc))
+        # 422 with a structured body: the UI needs to know *which* side is
+        # missing so it can prompt for onboarding info.
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "company_not_found",
+                "message": str(exc),
+                "missing_side": exc.side,
+                "missing_name": exc.missing_name,
+            },
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

@@ -432,15 +432,53 @@ async function loadCompanyDetail(id) {
 }
 
 // ---------- new invoice form ----------
+// Stash onboarding payloads keyed by side -> {new_seller|new_buyer}.
+const pendingOnboard = { seller: null, buyer: null };
+
 function setupAutocomplete(inputId, panelId, role) {
   const input = $(inputId);
   const panel = $(panelId);
+  const statusEl = $(inputId.replace("-input", "-status"));
   let activeReq = 0;
+  let checkReq = 0;
+  const side = role === "SELLER" ? "seller" : "buyer";
+
+  async function refreshStatus() {
+    const q = input.value.trim();
+    if (!q) {
+      statusEl.textContent = "";
+      statusEl.className = "match-status";
+      pendingOnboard[side] = null;
+      return;
+    }
+    const seq = ++checkReq;
+    const r = await fetch(`/api/companies/exists?name=${encodeURIComponent(q)}`).then((r) => r.json());
+    if (seq !== checkReq) return;
+    if (r.exists) {
+      const c = r.company;
+      const rating = c.rating ? `<span class="rating-pill rating-${c.rating}">${c.rating}</span>` : "";
+      statusEl.innerHTML = `Recognised: <strong>${c.name}</strong> ${rating}`;
+      statusEl.className = "match-status ok";
+      pendingOnboard[side] = null;
+    } else if (pendingOnboard[side] && pendingOnboard[side].name.trim().toLowerCase() === q.toLowerCase()) {
+      statusEl.innerHTML = `Will onboard as new company.`;
+      statusEl.className = "match-status warn";
+    } else {
+      statusEl.innerHTML = `Not on the platform. <a href="#" data-onboard="${side}">Add this company</a>`;
+      statusEl.className = "match-status warn";
+      statusEl.querySelector("a").addEventListener("click", (ev) => {
+        ev.preventDefault();
+        openOnboardModal(side, q);
+      });
+    }
+  }
 
   input.addEventListener("input", async () => {
     const q = input.value.trim();
+    pendingOnboard[side] = null;
     if (q.length < 1) {
       panel.classList.remove("show");
+      statusEl.textContent = "";
       return;
     }
     const seq = ++activeReq;
@@ -457,11 +495,137 @@ function setupAutocomplete(inputId, panelId, role) {
         ev.preventDefault();
         input.value = item.dataset.name;
         panel.classList.remove("show");
+        refreshStatus();
       });
     });
+    refreshStatus();
   });
   input.addEventListener("blur", () => setTimeout(() => panel.classList.remove("show"), 150));
 }
+
+// ---------- onboarding modal ----------
+let metaCache = null;
+
+async function ensureMetaCache() {
+  if (!metaCache) metaCache = await fetch("/api/meta").then((r) => r.json());
+  return metaCache;
+}
+
+async function openOnboardModal(side, prefillName) {
+  const meta = await ensureMetaCache();
+
+  // Populate dropdowns.
+  const cSel = $("#onboard-country");
+  cSel.innerHTML = meta.countries
+    .map((c) => `<option value="${c.code}">${c.name} (${c.code})</option>`)
+    .join("");
+  const iSel = $("#onboard-industry");
+  iSel.innerHTML = `<option value="">Industrial (default)</option>` +
+    meta.industries.map((i) => `<option value="${i}">${i}</option>`).join("");
+
+  // Default role based on which field is missing.
+  $("#onboard-role").value = side === "seller" ? "SELLER" : "BUYER";
+  $("#onboard-name").value = prefillName || "";
+  $("#onboard-side").value = side;
+  $("#onboard-revenue").value = "";
+  $("#onboard-years").value = "";
+  $("#onboard-parent").value = "";
+  $("#onboard-title").textContent = `Onboard new ${side}`;
+  $("#onboard-result").hidden = true;
+  $("#onboard-form").hidden = false;
+  $("#onboard-form").style.display = "";
+  $("#onboard-modal").hidden = false;
+}
+
+function closeOnboardModal() {
+  $("#onboard-modal").hidden = true;
+}
+
+function setupOnboardModal() {
+  $("#onboard-cancel").addEventListener("click", closeOnboardModal);
+  $("#onboard-back").addEventListener("click", closeOnboardModal);
+  $("#onboard-modal").addEventListener("click", (ev) => {
+    if (ev.target.id === "onboard-modal") closeOnboardModal();
+  });
+
+  $("#onboard-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    const side = fd.get("side");
+    const payload = {
+      name: fd.get("name").trim(),
+      role: fd.get("role"),
+      country: fd.get("country"),
+      industry: fd.get("industry") || "Industrial",
+      annual_revenue_usd: parseFloat(fd.get("annual_revenue_usd")),
+      years_operated: parseInt(fd.get("years_operated"), 10),
+      parent_name: (fd.get("parent_name") || "").trim() || null,
+    };
+
+    const btn = $("#onboard-submit");
+    btn.disabled = true;
+    btn.textContent = "Running agents...";
+    try {
+      const resp = await fetch("/api/companies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        $("#onboard-banner").textContent = data.detail || "Onboarding failed.";
+        $("#onboard-banner").className = "summary-banner error";
+        $("#onboard-result").hidden = false;
+        return;
+      }
+      const c = data.company;
+      const rp = c.risk_profile;
+      const rating = rp ? `<span class="rating-pill rating-${rp.rating}">${rp.rating}</span>` : "";
+      $("#onboard-banner").innerHTML =
+        `Onboarded <strong>${c.name}</strong> ${rating} with credit spread ${rp ? fmtPct(rp.credit_spread) : "—"}.`;
+      $("#onboard-banner").className = "summary-banner";
+
+      const primary = (c.credit_limits || []).find((x) => x.product === "GLOBAL");
+      const factoring = (c.credit_limits || []).find((x) => x.product === "FACTORING");
+      const reverse = (c.credit_limits || []).find((x) => x.product === "REVERSE_FACTORING");
+
+      $("#onboard-kv").innerHTML = `
+        <div class="k">Country</div><div>${c.country || "—"}</div>
+        <div class="k">Industry</div><div>${c.industry || "—"}</div>
+        <div class="k">Annual revenue</div><div>${fmtUsd(c.annual_revenue_usd)}</div>
+        <div class="k">Years operated</div><div>${meta.countries ? (new Date().getFullYear() - (c.founded_year || new Date().getFullYear())) : ""}</div>
+        <div class="k">Rating</div><div>${rating}</div>
+        <div class="k">PD (1y)</div><div>${rp ? fmtPct(rp.pd_1y) : "—"}</div>
+        <div class="k">Credit spread</div><div>${rp ? fmtPct(rp.credit_spread) : "—"}</div>
+        <div class="k">Global limit</div><div>${primary ? fmtUsd(primary.limit_usd) : "—"}</div>
+        <div class="k">Factoring sub-limit</div><div>${factoring ? fmtUsd(factoring.limit_usd) : "—"}</div>
+        <div class="k">Reverse-factoring sub-limit</div><div>${reverse ? fmtUsd(reverse.limit_usd) : "—"}</div>
+      `;
+
+      $("#onboard-events").innerHTML = (data.events || []).map(renderEvent).join("");
+      $("#onboard-form").hidden = true;
+      $("#onboard-result").hidden = false;
+
+      // Remember which side to pre-fill after the modal closes.
+      pendingOnboardResult = { side, companyName: c.name };
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Run Underwriter Agent";
+    }
+  });
+
+  $("#onboard-continue").addEventListener("click", () => {
+    if (pendingOnboardResult) {
+      const { side, companyName } = pendingOnboardResult;
+      const input = $(side === "seller" ? "#seller-input" : "#buyer-input");
+      input.value = companyName;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    closeOnboardModal();
+    pendingOnboardResult = null;
+  });
+}
+let pendingOnboardResult = null;
 
 function setupForm() {
   setupAutocomplete("#seller-input", "#seller-suggestions", "SELLER");
@@ -479,6 +643,7 @@ function setupForm() {
       tenor_days: parseInt(fd.get("tenor_days"), 10),
       grace_period_days: parseInt(fd.get("grace_period_days") || "0", 10),
     };
+
     const submitBtn = ev.target.querySelector("button[type='submit']");
     submitBtn.disabled = true;
     submitBtn.textContent = "Working...";
@@ -490,9 +655,17 @@ function setupForm() {
       });
       const data = await resp.json();
       const card = $("#result-card");
+
+      if (resp.status === 422 && data.error === "company_not_found") {
+        // Prompt onboarding for the missing side.
+        card.hidden = true;
+        openOnboardModal(data.missing_side, data.missing_name);
+        return;
+      }
+
       card.hidden = false;
       if (!resp.ok) {
-        $("#decision-summary").innerHTML = `<div class="summary-banner error">Error: ${data.detail || "Unknown error"}</div>`;
+        $("#decision-summary").innerHTML = `<div class="summary-banner error">Error: ${data.detail || data.message || "Unknown error"}</div>`;
         $("#decision-events").innerHTML = "";
         return;
       }
@@ -528,6 +701,7 @@ window.addEventListener("DOMContentLoaded", () => {
   loadMeta();
   loadDashboard();
   setupForm();
+  setupOnboardModal();
 
   $("#refresh-events").addEventListener("click", loadEvents);
   $("#filter-agent").addEventListener("change", loadEvents);

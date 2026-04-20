@@ -65,11 +65,21 @@ class TransactionAgent:
         invoice: models.Invoice,
     ) -> models.Invoice:
         # 1. Make sure both parties have risk profiles + base limits.
+        #    Query directly (instead of using the relationship cache) so we
+        #    don't double-insert a profile for a just-onboarded company.
         for party in (invoice.buyer, invoice.seller):
-            if party.risk_profile is None:
+            has_profile = (
+                db.query(models.RiskProfile.id)
+                .filter(models.RiskProfile.company_id == party.id)
+                .first()
+                is not None
+            )
+            if not has_profile:
                 UnderwriterAgent.build_risk_profile(db, party)
             CreditLimitAgent.ensure_global_limit(db, party)
             CreditLimitAgent.ensure_product_limit(db, party, invoice.product)
+            # Refresh so downstream code that reads party.risk_profile works.
+            db.refresh(party)
 
         # 2. Find program. If none, hand off to underwriting.
         program = TransactionAgent._find_program(

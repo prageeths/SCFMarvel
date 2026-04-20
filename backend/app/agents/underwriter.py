@@ -1,6 +1,7 @@
 """Underwriter Agent: builds risk profiles and credit limits."""
 from __future__ import annotations
 
+import datetime as _dt
 import math
 import random
 from typing import Optional, Tuple
@@ -135,13 +136,37 @@ def _apply_policy(
 
     own_rev = float(company.annual_revenue_usd or 0.0)
     if own_rev > 0 and own_rev < THRESHOLD_B_MAX_REVENUE:
-        # Cap at B (no better) for tiny companies.
-        if RATING_LADDER.index(final) < RATING_LADDER.index("B"):
-            reasons.append(f"revenue ${own_rev/1e6:.2f}M < $5M → cap at B")
+        # Per policy: any company with <$5M revenue is rated exactly B
+        # (neither better than B, nor worse).
+        if final != "B":
+            reasons.append(f"revenue ${own_rev/1e6:.2f}M < $5M → pinned at B")
             final = "B"
+
+    # New-entrant cap: companies with < 2 years of operating history can't be
+    # rated investment-grade immediately — limit to BB or below until they
+    # establish a track record.
+    years_operated = _years_operated(company)
+    if years_operated is not None and years_operated < 2:
+        if RATING_LADDER.index(final) < RATING_LADDER.index("BB"):
+            reasons.append(
+                f"new entrant: {years_operated}y operating history → cap at BB"
+            )
+            final = "BB"
+    elif years_operated is not None and years_operated < 5:
+        if RATING_LADDER.index(final) < RATING_LADDER.index("BBB"):
+            reasons.append(
+                f"young firm: {years_operated}y operating history → cap at BBB"
+            )
+            final = "BBB"
 
     reason = "; ".join(reasons) if reasons else "model-derived"
     return final, reason
+
+
+def _years_operated(company: models.Company) -> Optional[int]:
+    if not company.founded_year:
+        return None
+    return max(0, _dt.datetime.utcnow().year - int(company.founded_year))
 
 
 class UnderwriterAgent:
@@ -151,17 +176,40 @@ class UnderwriterAgent:
     def build_risk_profile(db: Session, company: models.Company, *, rng: Optional[random.Random] = None) -> models.RiskProfile:
         rng = rng or random.Random(company.id * 7919 + 13)
 
-        revenue = company.annual_revenue_usd or rng.uniform(5e6, 5e9)
-        leverage = rng.uniform(0.1, 0.9)  # debt / assets proxy
-        size_factor = max(0.0001, 1.0 / (1.0 + math.log10(max(revenue, 1e6))))
+        revenue = float(company.annual_revenue_usd or rng.uniform(5e6, 5e9))
+        leverage = rng.uniform(0.2, 0.7)  # debt / assets proxy, narrower band
+
+        # Size PD: calibrated curve targeting realistic 1y PDs vs revenue.
+        #   $1M    -> ~4%
+        #   $10M   -> ~1.6%
+        #   $100M  -> ~0.63%
+        #   $1B    -> ~0.25%
+        #   $10B   -> ~0.10%
+        #   $100B  -> ~0.04%
+        size_pd = 0.04 * (1_000_000.0 / max(revenue, 100_000.0)) ** 0.4
 
         industry_risk = _INDUSTRY_RISK.get(company.industry or "", 0.004)
         country_risk = _COUNTRY_RISK.get(company.country or "US", 0.002)
 
-        # Synthetic 1y PD blending size, leverage, industry, country.
+        # Tenure: more years operating -> lower PD. Near zero after ~20y.
+        years = _years_operated(company)
+        if years is None:
+            tenure_adj = 0.010  # unknown -> treat as moderately risky
+        else:
+            tenure_adj = max(0.0, 0.030 * math.exp(-years / 10.0))
+
+        # Blend the components. Size and tenure dominate; industry/country are
+        # additive tweaks; leverage is a small random-ish component.
         pd_1y = max(
             0.0002,
-            min(0.20, size_factor * 0.05 + leverage * 0.04 + industry_risk + country_risk),
+            min(
+                0.20,
+                size_pd
+                + tenure_adj
+                + industry_risk
+                + country_risk
+                + (leverage - 0.45) * 0.010,
+            ),
         )
 
         base_rating = "CCC"
@@ -182,7 +230,11 @@ class UnderwriterAgent:
         # and the rating agree even after a policy override).
         final_pd = RATING_PD[rating]
 
-        existing = company.risk_profile
+        existing = (
+            db.query(models.RiskProfile)
+            .filter(models.RiskProfile.company_id == company.id)
+            .one_or_none()
+        )
         notes = (
             f"Base model rating={base_rating} (PD={pd_1y:.2%}); "
             f"final rating={rating} via {policy_reason}."
@@ -223,6 +275,9 @@ class UnderwriterAgent:
                 "pd_1y": final_pd,
                 "policy_reason": policy_reason,
                 "max_revenue_in_tree": _max_revenue_in_tree(company),
+                "years_operated": years,
+                "industry_risk": industry_risk,
+                "country_risk": country_risk,
             },
         )
         return profile

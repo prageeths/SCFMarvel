@@ -12,6 +12,23 @@ from .config import ALLOWED_TENORS, PRODUCTS, SUPPORTED_CURRENCIES
 # ---------------- Invoice intake ----------------
 
 
+class CompanyOnboard(BaseModel):
+    """Minimal payload the New Invoice modal collects for a brand-new company."""
+    name: str = Field(..., min_length=2, max_length=255)
+    country: str = Field(..., min_length=2, max_length=64)
+    industry: Optional[str] = Field(default=None, max_length=128)
+    annual_revenue_usd: float = Field(..., gt=0, description="Average annual revenue in USD")
+    years_operated: int = Field(..., ge=0, le=200)
+    role: str = Field(default="BOTH")  # BUYER / SELLER / BOTH
+    parent_name: Optional[str] = None
+
+    def normalised_role(self) -> str:
+        r = self.role.strip().upper()
+        if r not in {"BUYER", "SELLER", "BOTH"}:
+            raise ValueError("role must be BUYER, SELLER or BOTH")
+        return r
+
+
 class InvoiceCreate(BaseModel):
     seller_name: str = Field(..., description="Exact seller company name")
     buyer_name: str = Field(..., description="Exact buyer company name")
@@ -21,6 +38,11 @@ class InvoiceCreate(BaseModel):
     tenor_days: int
     grace_period_days: int = 0
     invoice_number: Optional[str] = None
+    # Optional on-the-fly onboarding payloads — if the seller/buyer doesn't
+    # exist, the client can include one or both of these and the server will
+    # onboard them automatically.
+    new_seller: Optional[CompanyOnboard] = None
+    new_buyer: Optional[CompanyOnboard] = None
 
     def normalised_product(self) -> str:
         p = self.product.strip().upper().replace(" ", "_")

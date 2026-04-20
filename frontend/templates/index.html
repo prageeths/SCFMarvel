@@ -69,12 +69,14 @@
           <span>Seller</span>
           <input type="text" name="seller_name" id="seller-input" placeholder="Type to search..." required />
           <div class="autocomplete" id="seller-suggestions"></div>
+          <div class="match-status" id="seller-status"></div>
         </label>
 
         <label>
           <span>Buyer</span>
           <input type="text" name="buyer_name" id="buyer-input" placeholder="Type to search..." required />
           <div class="autocomplete" id="buyer-suggestions"></div>
+          <div class="match-status" id="buyer-status"></div>
         </label>
 
         <label>
@@ -308,6 +310,70 @@
   <footer class="footer">
     <span>SCF.AI Demo · multi-agent orchestration · synthetic data only</span>
   </footer>
+
+  <!-- =================== ONBOARDING MODAL =================== -->
+  <div class="modal-backdrop" id="onboard-modal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="onboard-title">Onboard new company</h2>
+        <button type="button" class="ghost close-btn" id="onboard-cancel" aria-label="Close">✕</button>
+      </div>
+      <p class="muted" id="onboard-subtitle">
+        This company isn't on the platform yet. Provide a few details and the
+        Underwriter Agent will determine a credit rating, spread, and limits
+        automatically.
+      </p>
+      <form id="onboard-form" class="form-grid">
+        <input type="hidden" name="side" id="onboard-side" />
+        <label>
+          <span>Company Name</span>
+          <input type="text" name="name" id="onboard-name" required />
+        </label>
+        <label>
+          <span>Role</span>
+          <select name="role" id="onboard-role">
+            <option value="BOTH">Both (Buyer and Seller)</option>
+            <option value="SELLER">Seller</option>
+            <option value="BUYER">Buyer</option>
+          </select>
+        </label>
+        <label>
+          <span>Operating Country</span>
+          <select name="country" id="onboard-country" required></select>
+        </label>
+        <label>
+          <span>Industry</span>
+          <select name="industry" id="onboard-industry"></select>
+        </label>
+        <label>
+          <span>Average Annual Revenue (USD)</span>
+          <input type="number" name="annual_revenue_usd" id="onboard-revenue" min="1" step="1000" placeholder="e.g. 12000000" required />
+        </label>
+        <label>
+          <span>Years Operated</span>
+          <input type="number" name="years_operated" id="onboard-years" min="0" max="200" placeholder="e.g. 7" required />
+        </label>
+        <label class="span-2">
+          <span>Parent Company (optional)</span>
+          <input type="text" name="parent_name" id="onboard-parent" placeholder="Leave blank if none" />
+        </label>
+        <div class="form-actions span-2">
+          <button type="button" class="ghost" id="onboard-back">Cancel</button>
+          <button type="submit" class="primary" id="onboard-submit">Run Underwriter Agent</button>
+        </div>
+      </form>
+
+      <div id="onboard-result" hidden>
+        <div class="summary-banner" id="onboard-banner"></div>
+        <div class="kv" id="onboard-kv"></div>
+        <div class="section-title">Agent Reasoning</div>
+        <div class="event-feed" id="onboard-events"></div>
+        <div class="form-actions">
+          <button type="button" class="primary" id="onboard-continue">Continue with Invoice</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

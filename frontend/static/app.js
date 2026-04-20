@@ -300,27 +300,53 @@ async function loadTransactions() {
 }
 
 // ---------- companies ----------
-let companyCache = [];
+function renderRatingPill(rating) {
+  if (!rating) return `<span class="muted">—</span>`;
+  return `<span class="rating-pill rating-${rating}">${rating}</span>`;
+}
+
+function fmtRevenue(v) {
+  if (v === null || v === undefined) return `<span class="muted">—</span>`;
+  const n = Number(v);
+  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
+  if (n >= 1e9)  return `$${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6)  return `$${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3)  return `$${(n / 1e3).toFixed(1)}K`;
+  return `$${n.toFixed(0)}`;
+}
+
 async function loadCompanies() {
-  const q = $("#company-search").value;
+  const q = $("#company-search").value.trim();
   const role = $("#company-role").value;
+  const rating = $("#company-rating").value;
+  const sort = $("#company-sort").value || "name";
+
   const params = new URLSearchParams();
   if (role) params.set("role", role);
-  params.set("limit", "200");
+  if (rating) params.set("rating", rating);
+  if (q) params.set("q", q);
+  if (sort) params.set("sort", sort);
+  params.set("limit", "500");
+
   const data = await fetch("/api/companies?" + params.toString()).then((r) => r.json());
-  let items = data.items;
-  if (q) items = items.filter((c) => c.name.toLowerCase().includes(q.toLowerCase()));
-  companyCache = items;
+  const items = data.items;
+  $("#company-count").textContent = `${items.length.toLocaleString()} of ${data.total.toLocaleString()} companies`;
+
   const tbody = $("#companies-table tbody");
   tbody.innerHTML = items.map((c) => `
     <tr data-id="${c.id}">
       <td>${c.name}</td>
+      <td>${renderRatingPill(c.rating)}</td>
+      <td>${c.credit_spread !== null && c.credit_spread !== undefined ? fmtPct(c.credit_spread) : '<span class="muted">—</span>'}</td>
+      <td>${fmtRevenue(c.annual_revenue_usd)}</td>
       <td><span class="badge">${c.role}</span></td>
       <td>${c.industry ?? ""}</td>
       <td>${c.country ?? ""}</td>
+      <td>${c.parent_name ? c.parent_name : '<span class="muted">—</span>'}</td>
     </tr>
-  `).join("");
-  tbody.querySelectorAll("tr").forEach((tr) => {
+  `).join("") || `<tr><td colspan="8" class="muted">No companies match the filters.</td></tr>`;
+
+  tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
     tr.addEventListener("click", () => loadCompanyDetail(tr.dataset.id));
   });
 }
@@ -508,4 +534,6 @@ window.addEventListener("DOMContentLoaded", () => {
   $("#filter-severity").addEventListener("change", loadEvents);
   $("#company-search").addEventListener("input", loadCompanies);
   $("#company-role").addEventListener("change", loadCompanies);
+  $("#company-rating").addEventListener("change", loadCompanies);
+  $("#company-sort").addEventListener("change", loadCompanies);
 });

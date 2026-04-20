@@ -84,6 +84,9 @@ def get_meta() -> dict:
 # ---------------------------------------------------------------------------
 
 
+RATING_ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC"]
+
+
 def _company_to_mini(c: models.Company) -> dict:
     return {
         "id": c.id,
@@ -91,6 +94,23 @@ def _company_to_mini(c: models.Company) -> dict:
         "role": c.role,
         "country": c.country,
         "industry": c.industry,
+    }
+
+
+def _company_to_row(c: models.Company) -> dict:
+    """Like `_company_to_mini` but includes risk/rating fields for the list view."""
+    rp = c.risk_profile
+    return {
+        "id": c.id,
+        "name": c.name,
+        "role": c.role,
+        "country": c.country,
+        "industry": c.industry,
+        "annual_revenue_usd": c.annual_revenue_usd,
+        "rating": rp.rating if rp else None,
+        "credit_spread": rp.credit_spread if rp else None,
+        "pd_1y": rp.pd_1y if rp else None,
+        "parent_name": c.parent.name if c.parent else None,
     }
 
 
@@ -113,16 +133,52 @@ def search_companies(
 @app.get("/api/companies")
 def list_companies(
     role: Optional[str] = None,
-    limit: int = 100,
+    rating: Optional[str] = None,
+    q: Optional[str] = None,
+    sort: str = "name",
+    limit: int = 200,
     offset: int = 0,
     db: Session = Depends(get_db),
 ) -> dict:
-    q = db.query(models.Company)
+    """List companies with rating info for the dashboard table.
+
+    Supports filtering by role, rating, and a name substring, plus sort keys:
+    ``name`` (default), ``rating`` (best first), ``revenue`` (highest first).
+    """
+    query = db.query(models.Company)
     if role:
-        q = q.filter(models.Company.role.in_([role.upper(), "BOTH"]))
-    total = q.count()
-    rows = q.order_by(models.Company.name.asc()).offset(offset).limit(limit).all()
-    return {"total": total, "items": [_company_to_mini(c) for c in rows]}
+        query = query.filter(models.Company.role.in_([role.upper(), "BOTH"]))
+    if q:
+        query = query.filter(models.Company.name.ilike(f"%{q}%"))
+    if rating:
+        query = query.join(models.RiskProfile).filter(
+            models.RiskProfile.rating == rating.upper()
+        )
+
+    total = query.count()
+
+    if sort == "revenue":
+        query = query.order_by(models.Company.annual_revenue_usd.desc().nullslast())
+    elif sort == "rating":
+        # Sort by the canonical rating ladder at the DB level so pagination
+        # works correctly. Unrated companies sink to the bottom.
+        from sqlalchemy import case
+
+        rating_rank = case(
+            {r: i for i, r in enumerate(RATING_ORDER)},
+            value=models.RiskProfile.rating,
+            else_=99,
+        )
+        query = query.outerjoin(models.RiskProfile).order_by(
+            rating_rank.asc(), models.Company.name.asc()
+        )
+    else:
+        query = query.order_by(models.Company.name.asc())
+
+    rows = query.offset(offset).limit(limit).all()
+    items = [_company_to_row(c) for c in rows]
+
+    return {"total": total, "items": items}
 
 
 @app.get("/api/companies/{company_id}")

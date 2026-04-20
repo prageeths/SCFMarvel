@@ -219,3 +219,38 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .explain-btn, .tx-explain-btn { padding: 4px 10px; font-size: 12px; }
 
+/* Companies tab */
+.grid-companies {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 18px;
+}
+@media (max-width: 1100px) { .grid-companies { grid-template-columns: 1fr; } }
+.table-wrap { max-height: 72vh; overflow: auto; padding: 0; }
+.table-wrap .data-table { margin: 0; }
+.table-wrap .data-table thead th {
+  position: sticky; top: 0; background: var(--bg-card); z-index: 1;
+}
+.filter-spacer { flex: 1; }
+
+/* Rating pills */
+.rating-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  border: 1px solid var(--border);
+  min-width: 34px;
+  text-align: center;
+}
+.rating-AAA { background: rgba(68,215,182,0.18); color: #9ff5dc; border-color: #44d7b6; }
+.rating-AA  { background: rgba(108,140,255,0.18); color: #c3d1ff; border-color: #6c8cff; }
+.rating-A   { background: rgba(108,140,255,0.12); color: #b2c2f2; border-color: #4a6fdc; }
+.rating-BBB { background: rgba(184,141,255,0.16); color: #ddcafd; border-color: #b88dff; }
+.rating-BB  { background: rgba(246,183,60,0.15); color: #ffe0a3; border-color: #f6b73c; }
+.rating-B   { background: rgba(246,183,60,0.22); color: #ffcf7a; border-color: #f6a43c; }
+.rating-CCC { background: rgba(239,90,111,0.18); color: #ffc2ce; border-color: #ef5a6f; }
+
+

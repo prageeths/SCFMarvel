@@ -246,20 +246,53 @@
     <!-- =================== COMPANIES =================== -->
     <section id="companies" class="tab-panel">
       <h1>Companies</h1>
+      <p class="muted">Browse the roster and review each counterparty's credit rating, spread and annual revenue.</p>
       <div class="filters">
-        <input type="text" id="company-search" placeholder="Search by name..." />
-        <select id="company-role">
-          <option value="">All roles</option>
-          <option value="BUYER">Buyer</option>
-          <option value="SELLER">Seller</option>
-        </select>
+        <label>Search
+          <input type="text" id="company-search" placeholder="Name..." />
+        </label>
+        <label>Role
+          <select id="company-role">
+            <option value="">All roles</option>
+            <option value="BUYER">Buyer</option>
+            <option value="SELLER">Seller</option>
+          </select>
+        </label>
+        <label>Rating
+          <select id="company-rating">
+            <option value="">All ratings</option>
+            <option>AAA</option>
+            <option>AA</option>
+            <option>A</option>
+            <option>BBB</option>
+            <option>BB</option>
+            <option>B</option>
+            <option>CCC</option>
+          </select>
+        </label>
+        <label>Sort by
+          <select id="company-sort">
+            <option value="name">Name (A-Z)</option>
+            <option value="rating">Rating (best first)</option>
+            <option value="revenue">Revenue (high to low)</option>
+          </select>
+        </label>
+        <div class="filter-spacer"></div>
+        <span id="company-count" class="muted"></span>
       </div>
-      <div class="grid-2">
-        <div>
+      <div class="grid-companies">
+        <div class="card table-wrap">
           <table class="data-table" id="companies-table">
             <thead>
               <tr>
-                <th>Name</th><th>Role</th><th>Industry</th><th>Country</th>
+                <th>Name</th>
+                <th>Rating</th>
+                <th>Spread</th>
+                <th>Revenue (USD)</th>
+                <th>Role</th>
+                <th>Industry</th>
+                <th>Country</th>
+                <th>Parent</th>
               </tr>
             </thead>
             <tbody></tbody>

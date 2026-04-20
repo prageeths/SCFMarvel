@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SCF.AI — Supply Chain Finance Console</title>
+  <title>Marvel SCF — AI-Native Supply Chain Finance</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -11,7 +11,7 @@
     <div class="brand">
       <span class="logo">⛓</span>
       <div>
-        <div class="brand-name">SCF.AI</div>
+        <div class="brand-name">Marvel SCF</div>
         <div class="brand-sub">AI-Native Supply Chain Finance</div>
       </div>
     </div>
@@ -116,6 +116,14 @@
           <button type="reset" class="ghost">Clear</button>
         </div>
       </form>
+
+      <div class="card" id="new-company-card" hidden>
+        <div class="card-header">
+          <h2 id="new-company-title">New counterparty onboarded</h2>
+          <span class="muted">Review the underwriter's decision, then submit the invoice below.</span>
+        </div>
+        <div id="new-company-body"></div>
+      </div>
 
       <div class="card" id="result-card" hidden>
         <h2>Decision Trace</h2>
@@ -308,7 +316,7 @@
   </main>
 
   <footer class="footer">
-    <span>SCF.AI Demo · multi-agent orchestration · synthetic data only</span>
+    <span>Marvel SCF · multi-agent orchestration · synthetic data only</span>
   </footer>
 
   <!-- =================== ONBOARDING MODAL =================== -->
@@ -362,16 +370,6 @@
           <button type="submit" class="primary" id="onboard-submit">Run Underwriter Agent</button>
         </div>
       </form>
-
-      <div id="onboard-result" hidden>
-        <div class="summary-banner" id="onboard-banner"></div>
-        <div class="kv" id="onboard-kv"></div>
-        <div class="section-title">Agent Reasoning</div>
-        <div class="event-feed" id="onboard-events"></div>
-        <div class="form-actions">
-          <button type="button" class="primary" id="onboard-continue">Continue with Invoice</button>
-        </div>
-      </div>
     </div>
   </div>
 

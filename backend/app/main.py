@@ -23,7 +23,7 @@ from . import models, schemas
 
 
 app = FastAPI(
-    title="AI-Native Supply Chain Finance Platform",
+    title="Marvel SCF — AI-Native Supply Chain Finance",
     version="1.0.0",
     description=(
         "Multi-agent platform supporting Factoring and Reverse Factoring with "

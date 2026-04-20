@@ -142,9 +142,8 @@ def _apply_policy(
             reasons.append(f"revenue ${own_rev/1e6:.2f}M < $5M → pinned at B")
             final = "B"
 
-    # New-entrant cap: companies with < 2 years of operating history can't be
-    # rated investment-grade immediately — limit to BB or below until they
-    # establish a track record.
+    # Tenure-based caps for *new* counterparties.  Companies with 5+ years
+    # of track record are allowed to earn full investment-grade ratings.
     years_operated = _years_operated(company)
     if years_operated is not None and years_operated < 2:
         if RATING_LADDER.index(final) < RATING_LADDER.index("BB"):
@@ -153,11 +152,11 @@ def _apply_policy(
             )
             final = "BB"
     elif years_operated is not None and years_operated < 5:
-        if RATING_LADDER.index(final) < RATING_LADDER.index("BBB"):
+        if RATING_LADDER.index(final) < RATING_LADDER.index("A"):
             reasons.append(
-                f"young firm: {years_operated}y operating history → cap at BBB"
+                f"young firm: {years_operated}y operating history → cap at A"
             )
-            final = "BBB"
+            final = "A"
 
     reason = "; ".join(reasons) if reasons else "model-derived"
     return final, reason
@@ -179,36 +178,48 @@ class UnderwriterAgent:
         revenue = float(company.annual_revenue_usd or rng.uniform(5e6, 5e9))
         leverage = rng.uniform(0.2, 0.7)  # debt / assets proxy, narrower band
 
-        # Size PD: calibrated curve targeting realistic 1y PDs vs revenue.
-        #   $1M    -> ~4%
-        #   $10M   -> ~1.6%
-        #   $100M  -> ~0.63%
-        #   $1B    -> ~0.25%
-        #   $10B   -> ~0.10%
-        #   $100B  -> ~0.04%
-        size_pd = 0.04 * (1_000_000.0 / max(revenue, 100_000.0)) ** 0.4
+        # Size PD: calibrated revenue curve.
+        #   $1M    -> ~3.0%
+        #   $10M   -> ~1.06%
+        #   $100M  -> ~0.38%
+        #   $500M  -> ~0.18%
+        #   $1B    -> ~0.134%
+        #   $10B   -> ~0.048%
+        #   $100B  -> ~0.017%
+        size_pd = 0.030 * (1_000_000.0 / max(revenue, 100_000.0)) ** 0.45
 
+        # Industry and country are additive "tilts"; scale them down so they
+        # can't by themselves push a large, tenured company out of the AA/A
+        # bands. (Bands are: AAA<=0.10%, AA<=0.30%, A<=0.70%, BBB<=1.50%.)
         industry_risk = _INDUSTRY_RISK.get(company.industry or "", 0.004)
         country_risk = _COUNTRY_RISK.get(company.country or "US", 0.002)
+        industry_tilt = industry_risk * 0.5
+        country_tilt = country_risk * 0.5
 
-        # Tenure: more years operating -> lower PD. Near zero after ~20y.
+        # Tenure: the penalty for a brand-new firm is meaningful but it decays
+        # quickly: effectively zero from ~5 years onward.
+        #   y=0  -> 2.00%
+        #   y=1  -> 1.21%
+        #   y=3  -> 0.45%
+        #   y=5  -> 0.16%
+        #   y=7  -> 0.06%
+        #   y=10 -> 0.014%
         years = _years_operated(company)
         if years is None:
-            tenure_adj = 0.010  # unknown -> treat as moderately risky
+            tenure_adj = 0.010
         else:
-            tenure_adj = max(0.0, 0.030 * math.exp(-years / 10.0))
+            tenure_adj = max(0.0, 0.020 * math.exp(-years / 2.0))
 
-        # Blend the components. Size and tenure dominate; industry/country are
-        # additive tweaks; leverage is a small random-ish component.
+        # Blend. Leverage is the only stochastic component and it's kept small.
         pd_1y = max(
             0.0002,
             min(
                 0.20,
                 size_pd
                 + tenure_adj
-                + industry_risk
-                + country_risk
-                + (leverage - 0.45) * 0.010,
+                + industry_tilt
+                + country_tilt
+                + (leverage - 0.45) * 0.005,
             ),
         )
 

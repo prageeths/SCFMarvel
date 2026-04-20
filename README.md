@@ -1,4 +1,4 @@
-# SCF.AI — AI-Native Supply Chain Finance Platform
+# Marvel SCF — AI-Native Supply Chain Finance Platform
 
 A multi-agent demo platform that supports **Factoring** and **Reverse Factoring**.
 It models hierarchical credit limits, multi-currency invoices, dynamic risk

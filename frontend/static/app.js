@@ -1,4 +1,4 @@
-// SCF.AI dashboard logic — single-page application backed by /api endpoints.
+// Marvel SCF dashboard logic — single-page application backed by /api endpoints.
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -531,9 +531,6 @@ async function openOnboardModal(side, prefillName) {
   $("#onboard-years").value = "";
   $("#onboard-parent").value = "";
   $("#onboard-title").textContent = `Onboard new ${side}`;
-  $("#onboard-result").hidden = true;
-  $("#onboard-form").hidden = false;
-  $("#onboard-form").style.display = "";
   $("#onboard-modal").hidden = false;
 }
 
@@ -573,63 +570,91 @@ function setupOnboardModal() {
       });
       const data = await resp.json();
       if (!resp.ok) {
-        $("#onboard-banner").textContent = data.detail || "Onboarding failed.";
-        $("#onboard-banner").className = "summary-banner error";
-        $("#onboard-result").hidden = false;
+        alert(`Onboarding failed: ${data.detail || data.message || "Unknown error"}`);
         return;
       }
-      const c = data.company;
-      const rp = c.risk_profile;
-      const rating = rp ? `<span class="rating-pill rating-${rp.rating}">${rp.rating}</span>` : "";
-      $("#onboard-banner").innerHTML =
-        `Onboarded <strong>${c.name}</strong> ${rating} with credit spread ${rp ? fmtPct(rp.credit_spread) : "—"}.`;
-      $("#onboard-banner").className = "summary-banner";
-
-      const primary = (c.credit_limits || []).find((x) => x.product === "GLOBAL");
-      const factoring = (c.credit_limits || []).find((x) => x.product === "FACTORING");
-      const reverse = (c.credit_limits || []).find((x) => x.product === "REVERSE_FACTORING");
-
-      $("#onboard-kv").innerHTML = `
-        <div class="k">Country</div><div>${c.country || "—"}</div>
-        <div class="k">Industry</div><div>${c.industry || "—"}</div>
-        <div class="k">Annual revenue</div><div>${fmtUsd(c.annual_revenue_usd)}</div>
-        <div class="k">Years operated</div><div>${meta.countries ? (new Date().getFullYear() - (c.founded_year || new Date().getFullYear())) : ""}</div>
-        <div class="k">Rating</div><div>${rating}</div>
-        <div class="k">PD (1y)</div><div>${rp ? fmtPct(rp.pd_1y) : "—"}</div>
-        <div class="k">Credit spread</div><div>${rp ? fmtPct(rp.credit_spread) : "—"}</div>
-        <div class="k">Global limit</div><div>${primary ? fmtUsd(primary.limit_usd) : "—"}</div>
-        <div class="k">Factoring sub-limit</div><div>${factoring ? fmtUsd(factoring.limit_usd) : "—"}</div>
-        <div class="k">Reverse-factoring sub-limit</div><div>${reverse ? fmtUsd(reverse.limit_usd) : "—"}</div>
-      `;
-
-      $("#onboard-events").innerHTML = (data.events || []).map(renderEvent).join("");
-      $("#onboard-form").hidden = true;
-      $("#onboard-result").hidden = false;
-
-      // Remember which side to pre-fill after the modal closes.
-      pendingOnboardResult = { side, companyName: c.name };
+      // Success: close the modal immediately and send the user back to the
+      // invoice form with the new company populated and its risk profile
+      // rendered above the form's decision area.
+      closeOnboardModal();
+      populateInvoiceAfterOnboard(side, data);
     } finally {
       btn.disabled = false;
       btn.textContent = "Run Underwriter Agent";
     }
   });
-
-  $("#onboard-continue").addEventListener("click", () => {
-    if (pendingOnboardResult) {
-      const { side, companyName } = pendingOnboardResult;
-      const input = $(side === "seller" ? "#seller-input" : "#buyer-input");
-      input.value = companyName;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    closeOnboardModal();
-    pendingOnboardResult = null;
-  });
 }
-let pendingOnboardResult = null;
+
+function populateInvoiceAfterOnboard(side, data) {
+  const c = data.company;
+  const rp = c.risk_profile;
+  const meta = metaCache || { countries: [] };
+
+  // Fill the seller/buyer input and refresh its recognition status.
+  const input = $(side === "seller" ? "#seller-input" : "#buyer-input");
+  input.value = c.name;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+
+  // Build the risk-profile summary card.
+  const ratingPill = rp ? `<span class="rating-pill rating-${rp.rating}">${rp.rating}</span>` : "";
+  const primary = (c.credit_limits || []).find((x) => x.product === "GLOBAL");
+  const factoring = (c.credit_limits || []).find((x) => x.product === "FACTORING");
+  const reverse = (c.credit_limits || []).find((x) => x.product === "REVERSE_FACTORING");
+  const yrs = c.founded_year ? (new Date().getFullYear() - c.founded_year) : null;
+
+  const eventsHtml = (data.events || []).map(renderEvent).join("");
+
+  $("#new-company-title").innerHTML =
+    `New ${side === "seller" ? "seller" : "buyer"} onboarded — <strong>${c.name}</strong> ${ratingPill}`;
+  $("#new-company-body").innerHTML = `
+    <div class="summary-banner">
+      Underwriter Agent assigned rating <strong>${rp ? rp.rating : "—"}</strong>
+      with credit spread <strong>${rp ? fmtPct(rp.credit_spread) : "—"}</strong>.
+      You can now submit the invoice below — the full agent flow will run as usual.
+    </div>
+    <div class="kv">
+      <div class="k">Role</div><div>${c.role}</div>
+      <div class="k">Country</div><div>${c.country || "—"}</div>
+      <div class="k">Industry</div><div>${c.industry || "—"}</div>
+      <div class="k">Annual revenue</div><div>${fmtUsd(c.annual_revenue_usd)}</div>
+      <div class="k">Years operated</div><div>${yrs === null ? "—" : yrs}</div>
+      <div class="k">Rating</div><div>${ratingPill}</div>
+      <div class="k">PD (1y)</div><div>${rp ? fmtPct(rp.pd_1y) : "—"}</div>
+      <div class="k">Credit spread</div><div>${rp ? fmtPct(rp.credit_spread) : "—"}</div>
+      <div class="k">Global limit</div><div>${primary ? fmtUsd(primary.limit_usd) : "—"}</div>
+      <div class="k">Factoring sub-limit</div><div>${factoring ? fmtUsd(factoring.limit_usd) : "—"}</div>
+      <div class="k">Reverse-factoring sub-limit</div><div>${reverse ? fmtUsd(reverse.limit_usd) : "—"}</div>
+      ${rp && rp.notes ? `<div class="k">Underwriter notes</div><div>${rp.notes}</div>` : ""}
+    </div>
+    <div class="section-title">Underwriter Agent Reasoning</div>
+    <div class="event-feed">${eventsHtml}</div>
+  `;
+  $("#new-company-card").hidden = false;
+
+  // Clear any stale decision trace from a previous failed submit.
+  $("#result-card").hidden = true;
+
+  // Scroll the new card into view and focus the next missing field.
+  $("#new-company-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  const otherSideInput = $(side === "seller" ? "#buyer-input" : "#seller-input");
+  const amountInput = document.querySelector('#invoice-form input[name="amount"]');
+  if (!otherSideInput.value) {
+    otherSideInput.focus();
+  } else if (amountInput && !amountInput.value) {
+    amountInput.focus();
+  }
+}
 
 function setupForm() {
   setupAutocomplete("#seller-input", "#seller-suggestions", "SELLER");
   setupAutocomplete("#buyer-input", "#buyer-suggestions", "BUYER");
+
+  $("#invoice-form").addEventListener("reset", () => {
+    $("#new-company-card").hidden = true;
+    $("#result-card").hidden = true;
+    $("#seller-status").textContent = "";
+    $("#buyer-status").textContent = "";
+  });
 
   $("#invoice-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();

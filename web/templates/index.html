@@ -126,6 +126,42 @@
         <div class="inner-panel" id="panel-trace"></div>
         <div class="inner-panel" id="panel-tool-calls" hidden></div>
         <div class="inner-panel" id="panel-events" hidden></div>
+
+        <div class="card" id="override-panel" hidden
+             style="background:rgba(239,90,111,0.05);border-color:var(--danger);margin-top:16px;">
+          <h3 style="margin-top:0;color:var(--danger);">Human override</h3>
+          <p class="muted">
+            This invoice was <strong>rejected</strong> by the agents. You can
+            override and fund it, or confirm the rejection. Either way, the
+            system saves your explanation as a learning note that every
+            future LLM decision will see.
+          </p>
+          <label style="display:block;font-size:12px;color:var(--muted);
+                        text-transform:uppercase;letter-spacing:1px;margin:8px 0 4px;">
+            Operator
+          </label>
+          <input id="override-operator" type="text" placeholder="your name"
+                 style="width:100%;background:var(--bg-soft);color:var(--text);
+                        border:1px solid var(--border);border-radius:8px;
+                        padding:10px 12px;font-size:14px;margin-bottom:12px;" />
+          <label style="display:block;font-size:12px;color:var(--muted);
+                        text-transform:uppercase;letter-spacing:1px;margin:8px 0 4px;">
+            Explanation (required)
+          </label>
+          <textarea id="override-explanation" rows="4"
+                 placeholder="Explain in plain English why this invoice should (or shouldn't) be funded. The agents will learn from this."
+                 style="width:100%;background:var(--bg-soft);color:var(--text);
+                        border:1px solid var(--border);border-radius:8px;
+                        padding:10px 12px;font-size:14px;font-family:inherit;
+                        resize:vertical;"></textarea>
+          <div class="form-actions" style="margin-top:12px;">
+            <button type="button" class="ghost" id="override-confirm-reject">Confirm rejection</button>
+            <button type="button" class="primary" id="override-approve-fund"
+                    style="background:linear-gradient(135deg,var(--danger),var(--warn));">
+              Override → FUND
+            </button>
+          </div>
+        </div>
       </div>
     </section>
 

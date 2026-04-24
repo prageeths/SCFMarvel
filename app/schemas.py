@@ -27,3 +27,10 @@ class InvoiceCreate(BaseModel):
     invoice_number: Optional[str] = None
     new_seller: Optional[CompanyOnboard] = None
     new_buyer: Optional[CompanyOnboard] = None
+
+
+class InvoiceOverride(BaseModel):
+    """Human-in-the-loop override for a rejected invoice."""
+    action: str = Field(..., description="'approve_fund' or 'keep_rejected'")
+    human_explanation: str = Field(..., min_length=8)
+    operator: Optional[str] = Field(default="operator", max_length=128)

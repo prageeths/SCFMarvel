@@ -173,8 +173,61 @@ def _payment_history_snapshot(db: Session, company_id: int) -> Dict[str, Any]:
     return {"by_status": totals, "ratios": ratios}
 
 
+def relevant_human_overrides(
+    db: Session,
+    *,
+    buyer_id: Optional[int] = None,
+    seller_id: Optional[int] = None,
+    product: Optional[str] = None,
+    limit: int = 8,
+) -> List[Dict[str, Any]]:
+    """Return the most relevant human-override learning notes for the given
+    context. Used to teach future LLM decisions.
+
+    Ranking (simple, transparent): anything touching both counterparties →
+    then anything touching either one → then anything touching the product.
+    Freshest first within each bucket.
+    """
+    q = db.query(models.LearningNote).order_by(models.LearningNote.id.desc())
+    notes = q.all()
+
+    def _score(n: models.LearningNote) -> int:
+        s = 0
+        if buyer_id is not None and n.buyer_id == buyer_id: s += 3
+        if seller_id is not None and n.seller_id == seller_id: s += 3
+        if product is not None and n.product == product: s += 1
+        return s
+
+    ranked = sorted(
+        [n for n in notes if _score(n) > 0 or (buyer_id is None and seller_id is None)],
+        key=lambda n: (-_score(n), -n.id),
+    )[:limit]
+
+    def _fmt(n: models.LearningNote) -> Dict[str, Any]:
+        return {
+            "id": n.id,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+            "kind": n.kind,
+            "original_decision": n.original_decision,
+            "final_decision": n.final_decision,
+            "original_reason": n.original_reason,
+            "human_explanation": n.human_explanation,
+            "invoice_id": n.invoice_id,
+            "program_id": n.program_id,
+            "buyer_id": n.buyer_id,
+            "seller_id": n.seller_id,
+            "product": n.product,
+            "invoice_amount_usd": n.invoice_amount_usd,
+        }
+
+    return [_fmt(n) for n in ranked]
+
+
 def company_context(db: Session, company: models.Company) -> Dict[str, Any]:
     """Everything the Underwriter needs to rate this single company."""
+    overrides = relevant_human_overrides(
+        db, buyer_id=company.id, seller_id=company.id, limit=5,
+    )
     return {
         "identity": {
             "id": company.id, "name": company.name,
@@ -195,6 +248,7 @@ def company_context(db: Session, company: models.Company) -> Dict[str, Any]:
         "credit_limits": _credit_limits_snapshot(company),
         "programs": _programs_snapshot(db, company.id),
         "payment_history": _payment_history_snapshot(db, company.id),
+        "relevant_human_overrides": overrides,
     }
 
 
@@ -216,7 +270,12 @@ def joint_risk_context(
     """Full situation snapshot for the Underwriter's decide_new_program call."""
     buyer_rp = invoice.buyer.risk_profile
     seller_rp = invoice.seller.risk_profile
+    overrides = relevant_human_overrides(
+        db, buyer_id=invoice.buyer_id, seller_id=invoice.seller_id,
+        product=invoice.product, limit=8,
+    )
     return {
+        "relevant_human_overrides": overrides,
         "invoice": {
             "id": invoice.id,
             "amount_usd": invoice.amount_usd,
@@ -256,6 +315,10 @@ def joint_risk_context(
 
 def program_context(db: Session, program: models.Program) -> Dict[str, Any]:
     """Summary of a bilateral program for the Review agent."""
+    overrides = relevant_human_overrides(
+        db, buyer_id=program.buyer_id, seller_id=program.seller_id,
+        product=program.product, limit=5,
+    )
     # Recent invoices on this program.
     recent = (
         db.query(models.Invoice)
@@ -274,6 +337,7 @@ def program_context(db: Session, program: models.Program) -> Dict[str, Any]:
     funded = sum(1 for i in recent if i.status == "FUNDED")
     rejected = sum(1 for i in recent if i.status == "REJECTED")
     return {
+        "relevant_human_overrides": overrides,
         "program": {
             "id": program.id, "name": program.name, "product": program.product,
             "credit_limit_usd": program.credit_limit_usd,

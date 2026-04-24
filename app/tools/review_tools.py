@@ -11,7 +11,7 @@ from ..config import (
 )
 from ..context import company_context, program_context
 from ..llm import (
-    SYSTEM_REVIEW, ReviewRecommendation, facts_block, safe_structured_call,
+    LLMUnavailable, SYSTEM_REVIEW, ReviewRecommendation, facts_block, structured_call,
 )
 from ._common import log_event
 
@@ -49,9 +49,15 @@ def tool_decide_overage(db: Session, *, invoice_id: int, overage_usd: float) -> 
         and (program.credit_limit_usd + overage_usd) > PROGRAM_FUNDING_HARD_CEILING_USD
     )
 
-    # LLM review with full program + both counterparties' context.
-    llm_rec: Optional[ReviewRecommendation] = None
-    if llm_enabled() and program is not None:
+    # Strict LLM mode — the Review Agent MUST decide. If the LLM is
+    # unreachable we raise LLMUnavailable; the API surfaces a 503 with
+    # "Couldn't call the OpenAI API ...".
+    if program is None:
+        return {"ok": False, "error": "no program attached to invoice"}
+    if not llm_enabled():
+        raise LLMUnavailable("review_decide_overage")
+    llm_rec: ReviewRecommendation
+    if True:
         facts = {
             "invoice": {
                 "id": inv.id,
@@ -77,7 +83,7 @@ def tool_decide_overage(db: Session, *, invoice_id: int, overage_usd: float) -> 
                 "program_funding_ceiling_usd": PROGRAM_FUNDING_HARD_CEILING_USD,
             },
         }
-        llm_rec = safe_structured_call(
+        llm_rec = structured_call(
             SYSTEM_REVIEW,
             (
                 "Decide TEMP_INCREASE or DENY. If TEMP_INCREASE, return "

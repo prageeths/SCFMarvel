@@ -654,47 +654,120 @@ function setupForm() {
       }
 
       card.hidden = false;
+      if (resp.status === 503 && data.error === "llm_unavailable") {
+        $("#decision-summary").innerHTML =
+          `<div class="summary-banner error"><strong>Couldn't call the OpenAI API.</strong>\n${data.detail || ""}</div>`;
+        $("#panel-trace").innerHTML = "";
+        $("#panel-tool-calls").innerHTML = "";
+        $("#panel-events").innerHTML = "";
+        $("#override-panel").hidden = true;
+        return;
+      }
       if (!resp.ok) {
         $("#decision-summary").innerHTML = `<div class="summary-banner error">Error: ${data.detail || data.message || "Unknown error"}</div>`;
         $("#panel-trace").innerHTML = "";
         $("#panel-tool-calls").innerHTML = "";
         $("#panel-events").innerHTML = "";
+        $("#override-panel").hidden = true;
         return;
       }
 
-      const inv = data.invoice;
-      const bannerClass = inv.status === "REJECTED" ? "summary-banner error" : "summary-banner";
-      // On reject, show the full multi-line decision_reason; on approve, the
-      // one-line summary is enough.
-      const bannerHeader = `${inv.invoice_number} · ${inv.status}`;
-      const bannerBody = inv.status === "REJECTED" && inv.decision_reason
-        ? inv.decision_reason
-        : (inv.decision_reason || data.summary || "");
-      $("#decision-summary").innerHTML = `
-        <div class="${bannerClass}"><strong>${bannerHeader}</strong>${bannerBody ? "\n" + bannerBody : ""}</div>
-        <div class="kv">
-          <div class="k">Invoice</div><div>${inv.invoice_number} <span class="badge ${inv.status}">${inv.status}</span></div>
-          <div class="k">Seller → Buyer</div><div>${inv.seller.name} → ${inv.buyer.name}</div>
-          <div class="k">Product</div><div>${inv.product}</div>
-          <div class="k">Amount</div><div>${inv.amount.toLocaleString()} ${inv.currency} (${fmtUsd(inv.amount_usd)})</div>
-          <div class="k">Tenor / Grace</div><div>${inv.tenor_days}d / ${inv.grace_period_days}d</div>
-          <div class="k">Base rate</div><div>${fmtPct(inv.base_rate)}</div>
-          <div class="k">Credit spread</div><div>${fmtPct(inv.credit_spread)}</div>
-          <div class="k">All-in fee</div><div>${fmtUsd(inv.fee_usd)}</div>
-          <div class="k">Funded amount</div><div>${fmtUsd(inv.funded_amount_usd)}</div>
-        </div>`;
-      $("#panel-trace").innerHTML = (data.trace || []).map(renderTraceEntry).join("")
-        || `<div class="muted">No trace entries.</div>`;
-      $("#panel-tool-calls").innerHTML = (data.tool_calls || []).map(renderToolCall).join("")
-        || `<div class="muted">No tool calls recorded.</div>`;
-      $("#panel-events").innerHTML = (data.events || []).map(renderEvent).join("")
-        || `<div class="muted">No events persisted.</div>`;
-      loadDashboard();
+      renderInvoiceResult(data);
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = "Run Agent Graph";
     }
   });
+
+  // Override panel wiring — visible whenever the result card shows a
+  // REJECTED/DO_NOT_FUND invoice.
+  $("#override-approve-fund").addEventListener("click", () => submitOverride("approve_fund"));
+  $("#override-confirm-reject").addEventListener("click", () => submitOverride("keep_rejected"));
+}
+
+function renderInvoiceResult(data) {
+  const inv = data.invoice;
+  const rejected = (inv.status === "REJECTED" || inv.status === "DO_NOT_FUND");
+  const bannerClass = rejected ? "summary-banner error" : "summary-banner";
+  const bannerHeader = `${inv.invoice_number} · ${inv.status}`;
+  const bannerBody = (rejected && inv.decision_reason)
+    ? inv.decision_reason
+    : (inv.decision_reason || data.summary || "");
+  $("#result-card").hidden = false;
+  $("#decision-summary").innerHTML = `
+    <div class="${bannerClass}"><strong>${bannerHeader}</strong>${bannerBody ? "\n" + bannerBody : ""}</div>
+    <div class="kv">
+      <div class="k">Invoice</div><div>${inv.invoice_number} <span class="badge ${inv.status}">${inv.status}</span></div>
+      <div class="k">Seller → Buyer</div><div>${inv.seller.name} → ${inv.buyer.name}</div>
+      <div class="k">Product</div><div>${inv.product}</div>
+      <div class="k">Amount</div><div>${inv.amount.toLocaleString()} ${inv.currency} (${fmtUsd(inv.amount_usd)})</div>
+      <div class="k">Tenor / Grace</div><div>${inv.tenor_days}d / ${inv.grace_period_days}d</div>
+      <div class="k">Base rate</div><div>${fmtPct(inv.base_rate)}</div>
+      <div class="k">Credit spread</div><div>${fmtPct(inv.credit_spread)}</div>
+      <div class="k">All-in fee</div><div>${fmtUsd(inv.fee_usd)}</div>
+      <div class="k">Funded amount</div><div>${fmtUsd(inv.funded_amount_usd)}</div>
+    </div>`;
+  $("#panel-trace").innerHTML = (data.trace || []).map(renderTraceEntry).join("")
+    || `<div class="muted">No trace entries.</div>`;
+  $("#panel-tool-calls").innerHTML = (data.tool_calls || []).map(renderToolCall).join("")
+    || `<div class="muted">No tool calls recorded.</div>`;
+  $("#panel-events").innerHTML = (data.events || []).map(renderEvent).join("")
+    || `<div class="muted">No events persisted.</div>`;
+
+  const overridePanel = $("#override-panel");
+  overridePanel.hidden = !rejected;
+  if (rejected) {
+    overridePanel.dataset.invoiceId = inv.id;
+    $("#override-explanation").value = "";
+  } else {
+    delete overridePanel.dataset.invoiceId;
+  }
+
+  loadDashboard();
+}
+
+async function submitOverride(action) {
+  const panel = $("#override-panel");
+  const invoiceId = panel.dataset.invoiceId;
+  if (!invoiceId) return;
+  const explanation = $("#override-explanation").value.trim();
+  if (explanation.length < 8) {
+    alert("Please provide at least a one-sentence explanation (8+ chars).");
+    return;
+  }
+  const operator = $("#override-operator").value.trim() || "operator";
+  const buttons = panel.querySelectorAll("button");
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const resp = await fetch(`/api/invoices/${invoiceId}/override`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, human_explanation: explanation, operator }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert(`Override failed: ${data.detail || data.message || "Unknown error"}`);
+      return;
+    }
+    // Re-render with the latest invoice state.
+    renderInvoiceResult({
+      invoice: data.invoice,
+      events: data.events,
+      trace: [{
+        node: "human_override",
+        timestamp: new Date().toISOString(),
+        message:
+          (action === "approve_fund"
+            ? "Operator overrode the rejection and approved funding. Reason: "
+            : "Operator confirmed the rejection. Reason: ")
+          + explanation,
+      }],
+      tool_calls: [],
+      summary: data.summary,
+    });
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
 }
 
 // ---------- bootstrap ----------

@@ -19,8 +19,9 @@ from ..config import (
 )
 from ..context import company_context, joint_risk_context
 from ..llm import (
-    RatingAnalystResult, SYSTEM_RATING_ANALYST, SYSTEM_UNDERWRITER,
-    UnderwriterRecommendation, facts_block, safe_structured_call,
+    LLMUnavailable, RatingAnalystResult, SYSTEM_RATING_ANALYST,
+    SYSTEM_UNDERWRITER, UnderwriterRecommendation,
+    facts_block, structured_call,
 )
 from ._common import log_event
 
@@ -211,16 +212,22 @@ def tool_build_risk_profile(
     deterministic_rating, deterministic_pd, deterministic_spread = _deterministic_rating(company)
     rated_by = "deterministic_fallback"
     llm_rationale: Optional[str] = None
-    llm_raw: Optional[RatingAnalystResult] = None
 
-    if llm_enabled() and not seed_mode:
+    if seed_mode or not llm_enabled():
+        # Bulk seed + offline demos use the deterministic model.
+        proposed_rating = deterministic_rating
+        proposed_pd = deterministic_pd
+        proposed_spread = deterministic_spread
+    else:
+        # Strict LLM mode — every live rating is LLM-produced or the whole
+        # request fails fast.
         ctx = company_context(db, company)
         ctx["deterministic_model_hint"] = {
             "rating": deterministic_rating,
             "pd_1y": deterministic_pd,
             "credit_spread": deterministic_spread,
         }
-        llm_raw = safe_structured_call(
+        llm_raw = structured_call(
             SYSTEM_RATING_ANALYST,
             (
                 "Produce the rating / PD / spread for this company from its full "
@@ -231,17 +238,16 @@ def tool_build_risk_profile(
             RatingAnalystResult,
             label="rating_analyst",
         )
-
-    if llm_raw is not None and llm_raw.rating in RATING_LADDER:
+        if llm_raw.rating not in RATING_LADDER:
+            raise LLMUnavailable(
+                "rating_analyst",
+                ValueError(f"LLM returned invalid rating {llm_raw.rating!r}"),
+            )
         proposed_rating = llm_raw.rating
         proposed_pd = max(0.0001, min(0.20, float(llm_raw.pd_1y)))
         proposed_spread = max(0.0025, min(0.06, float(llm_raw.credit_spread)))
         llm_rationale = llm_raw.rationale
         rated_by = "llm_rating_analyst"
-    else:
-        proposed_rating = deterministic_rating
-        proposed_pd = deterministic_pd
-        proposed_spread = deterministic_spread
 
     # Apply non-negotiable policy. The LLM can never violate floors / caps.
     final_rating, policy_reasons = _enforce_rating_policy(proposed_rating, company)
@@ -485,37 +491,37 @@ def tool_decide_new_program(
     buyer_head = buyer_hr.get("headroom_usd", 0.0)
     seller_head = seller_hr.get("headroom_usd", 0.0)
 
-    llm_rec: Optional[UnderwriterRecommendation] = None
-    if llm_enabled():
-        ctx = joint_risk_context(
-            db, invoice,
-            buyer_head=buyer_head, seller_head=seller_head,
-            buyer_breakdown=buyer_hr.get("breakdown", {}),
-            seller_breakdown=seller_hr.get("breakdown", {}),
-            requested_limit_usd=raw_program_limit,
-        )
-        ctx["joint_risk_assessment"] = joint
-        ctx["deterministic_hint"] = {
-            "rule_engine_decision": "APPROVE" if ratings_ok else "DECLINE",
-            "rule_engine_suggested_limit_usd": fallback_limit,
-        }
-        human = (
-            "Decide APPROVE or DECLINE for this new bilateral program and, "
-            "if APPROVE, pick a prudent program limit (USD) ≤ "
-            f"${PROGRAM_FUNDING_HARD_CEILING_USD:,.0f}. Weigh BOTH parties' "
-            "credit profiles, existing programs and payment histories.\n\n"
-            + facts_block(ctx)
-        )
-        llm_rec = safe_structured_call(
-            SYSTEM_UNDERWRITER, human, UnderwriterRecommendation,
-            label="underwriter_decide_new_program",
-        )
+    # Strict LLM mode — the Underwriter *must* decide.
+    if not llm_enabled():
+        raise LLMUnavailable("underwriter_decide_new_program")
+    ctx = joint_risk_context(
+        db, invoice,
+        buyer_head=buyer_head, seller_head=seller_head,
+        buyer_breakdown=buyer_hr.get("breakdown", {}),
+        seller_breakdown=seller_hr.get("breakdown", {}),
+        requested_limit_usd=raw_program_limit,
+    )
+    ctx["joint_risk_assessment"] = joint
+    ctx["deterministic_hint"] = {
+        "rule_engine_decision": "APPROVE" if ratings_ok else "DECLINE",
+        "rule_engine_suggested_limit_usd": fallback_limit,
+    }
+    human = (
+        "Decide APPROVE or DECLINE for this new bilateral program and, "
+        "if APPROVE, pick a prudent program limit (USD) ≤ "
+        f"${PROGRAM_FUNDING_HARD_CEILING_USD:,.0f}. Weigh BOTH parties' "
+        "credit profiles, existing programs and payment histories.\n\n"
+        + facts_block(ctx)
+    )
+    llm_rec: UnderwriterRecommendation = structured_call(
+        SYSTEM_UNDERWRITER, human, UnderwriterRecommendation,
+        label="underwriter_decide_new_program",
+    )
 
-    # Deterministic ratings-based veto always wins.
-    if not ratings_ok:
+    # Platform-level ratings veto still trumps the LLM (defensive defense).
+    if not ratings_ok or llm_rec.decision == "DECLINE":
         reason = _format_rejection_reason(invoice, joint)
-        if llm_rec is not None:
-            reason += f"\n• Underwriter LLM memo: {llm_rec.rationale}"
+        reason += f"\n• Underwriter LLM memo: {llm_rec.rationale}"
         invoice.status = "REJECTED"
         invoice.decision_reason = reason
         log_event(
@@ -523,20 +529,20 @@ def tool_decide_new_program(
             node="underwriter_agent", severity="DECISION",
             message=reason, invoice_id=invoice.id,
             payload={"joint_risk_assessment": joint,
-                     "llm_decision": llm_rec.decision if llm_rec else None,
-                     "llm_rationale": llm_rec.rationale if llm_rec else None},
+                     "llm_decision": llm_rec.decision,
+                     "llm_rationale": llm_rec.rationale,
+                     "rule_engine_decision": "APPROVE" if ratings_ok else "DECLINE"},
         )
         return {"approved": False, "reason": reason,
                 "joint_risk_assessment": joint,
-                "llm_rationale": llm_rec.rationale if llm_rec else None}
+                "llm_rationale": llm_rec.rationale}
 
-    # LLM owns the sizing decision when enabled; guardrails then clamp.
-    sized_by = "rule_engine"
-    if llm_rec is not None and llm_rec.decision == "APPROVE":
-        proposed_limit = max(0.0, float(llm_rec.recommended_program_limit_usd))
-        sized_by = "llm_underwriter"
-    else:
+    # LLM owns the sizing decision; guardrails then clamp.
+    proposed_limit = max(0.0, float(llm_rec.recommended_program_limit_usd))
+    sized_by = "llm_underwriter"
+    if proposed_limit <= 0:
         proposed_limit = fallback_limit
+        sized_by = "rule_engine_fallback"
 
     # Hard clamps (in order): platform ceiling, buyer subtree, seller subtree.
     pre_clamp = proposed_limit
@@ -585,8 +591,7 @@ def tool_decide_new_program(
             f"• Limit clamped from ${raw_program_limit:,.0f} to the "
             f"${PROGRAM_FUNDING_HARD_CEILING_USD:,.0f} platform ceiling."
         )
-    if llm_rec is not None:
-        msg_lines.append(f"• Underwriter LLM memo: {llm_rec.rationale}")
+    msg_lines.append(f"• Underwriter LLM memo: {llm_rec.rationale}")
     msg = "\n".join(msg_lines)
 
     log_event(
@@ -601,8 +606,8 @@ def tool_decide_new_program(
             "clamped": clamped,
             "sized_by": sized_by,
             "joint_risk_assessment": joint,
-            "llm_decision": llm_rec.decision if llm_rec else None,
-            "llm_rationale": llm_rec.rationale if llm_rec else None,
+            "llm_decision": llm_rec.decision,
+            "llm_rationale": llm_rec.rationale,
         },
     )
     return {
@@ -612,7 +617,7 @@ def tool_decide_new_program(
         "clamped_to_ceiling": clamped,
         "sized_by": sized_by,
         "joint_risk_assessment": joint,
-        "llm_rationale": llm_rec.rationale if llm_rec else None,
+        "llm_rationale": llm_rec.rationale,
     }
 
 

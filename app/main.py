@@ -12,6 +12,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from . import models, schemas
+from .llm import LLMUnavailable
 from .config import (
     ALLOWED_TENORS, APP_NAME, APP_TAGLINE, BASE_RATE, COUNTRIES, FX_TO_USD,
     INDUSTRIES, LLM_MODEL, PRODUCT_FACTORING, PRODUCT_REVERSE_FACTORING,
@@ -48,6 +49,18 @@ def get_db():
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+
+
+@app.exception_handler(LLMUnavailable)
+async def _llm_unavailable_handler(request, exc: LLMUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "llm_unavailable",
+            "message": "Couldn't call the OpenAI API.",
+            "detail": str(exc),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +483,158 @@ def list_invoices(
     total = q.count()
     rows = q.order_by(models.Invoice.id.desc()).offset(offset).limit(limit).all()
     return {"total": total, "items": [_invoice_dict(i) for i in rows]}
+
+
+@app.post("/api/invoices/{invoice_id}/override")
+def override_invoice(
+    invoice_id: int,
+    payload: schemas.InvoiceOverride,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Human-in-the-loop override for a rejected invoice.
+
+    * ``action = "approve_fund"`` — flips the invoice to FUNDED and records
+      a ``OVERRIDE_APPROVED`` learning note so future LLM decisions can
+      learn from the operator's reasoning.
+    * ``action = "keep_rejected"`` — keeps the invoice rejected and records
+      a ``OVERRIDE_CONFIRMED`` learning note that reinforces the rejection
+      for similar future cases.
+    """
+    inv = db.query(models.Invoice).get(invoice_id)
+    if inv is None:
+        raise HTTPException(404, f"Invoice {invoice_id} not found")
+    if inv.status not in ("REJECTED", "DO_NOT_FUND"):
+        raise HTTPException(
+            400,
+            f"Invoice {invoice_id} is not in a rejected state "
+            f"(status={inv.status}); override not applicable.",
+        )
+
+    action = (payload.action or "").strip().lower()
+    original_decision = inv.status
+    original_reason = inv.decision_reason
+
+    if action == "approve_fund":
+        # Re-price if needed (no prior price on reject paths).
+        if inv.fee_usd <= 0.0 and inv.amount_usd > 0:
+            from .tools.transaction_tools import tool_price_invoice
+            tool_price_invoice(db, invoice_id=inv.id)
+            inv = db.query(models.Invoice).get(invoice_id)  # refresh
+        inv.status = "FUNDED"
+        final_decision = "FUNDED"
+        banner = (
+            f"Human override: FUNDED. Operator reason: {payload.human_explanation}"
+        )
+        inv.decision_reason = (
+            (inv.decision_reason or "") + "\n\n" + banner
+        ).strip()
+        note_kind = "OVERRIDE_APPROVED"
+        severity = "WARN"
+    elif action == "keep_rejected":
+        final_decision = inv.status  # unchanged
+        banner = (
+            f"Human override confirmed rejection. Operator reason: "
+            f"{payload.human_explanation}"
+        )
+        inv.decision_reason = (
+            (inv.decision_reason or "") + "\n\n" + banner
+        ).strip()
+        note_kind = "OVERRIDE_CONFIRMED"
+        severity = "INFO"
+    else:
+        raise HTTPException(
+            400, f"Unknown override action '{payload.action}'. "
+                 "Use 'approve_fund' or 'keep_rejected'."
+        )
+
+    note = models.LearningNote(
+        created_by=payload.operator or "operator",
+        kind=note_kind,
+        invoice_id=inv.id,
+        program_id=inv.program_id,
+        buyer_id=inv.buyer_id,
+        seller_id=inv.seller_id,
+        product=inv.product,
+        original_decision=original_decision,
+        final_decision=final_decision,
+        original_reason=original_reason,
+        human_explanation=payload.human_explanation,
+        invoice_amount_usd=inv.amount_usd,
+    )
+    db.add(note)
+
+    from .tools._common import log_event
+    log_event(
+        db, agent="human_reviewer", action=f"HUMAN_{note_kind}",
+        node="human_override", severity=severity,
+        message=banner,
+        invoice_id=inv.id, program_id=inv.program_id,
+        payload={
+            "action": action,
+            "operator": payload.operator,
+            "original_decision": original_decision,
+            "final_decision": final_decision,
+            "human_explanation": payload.human_explanation,
+            "learning_note_id": None,  # backfilled below if committed
+        },
+    )
+    db.commit()
+    db.refresh(note)
+
+    events = (
+        db.query(models.AgentEvent)
+        .filter(models.AgentEvent.invoice_id == inv.id)
+        .order_by(models.AgentEvent.id.asc())
+        .all()
+    )
+    return {
+        "invoice": _invoice_dict(inv),
+        "learning_note": {
+            "id": note.id,
+            "kind": note.kind,
+            "created_at": note.created_at.isoformat() if note.created_at else None,
+            "human_explanation": note.human_explanation,
+        },
+        "summary": (
+            f"{inv.invoice_number}: overridden to {final_decision} "
+            f"by {payload.operator or 'operator'}"
+        ),
+        "events": [
+            {"id": e.id, "timestamp": e.timestamp.isoformat(),
+             "agent": e.agent, "action": e.action, "node": e.node,
+             "severity": e.severity, "message": e.message}
+            for e in events
+        ],
+    }
+
+
+@app.get("/api/learning-notes")
+def list_learning_notes(
+    limit: int = 50, offset: int = 0, db: Session = Depends(get_db),
+) -> dict:
+    q = db.query(models.LearningNote).order_by(models.LearningNote.id.desc())
+    total = q.count()
+    rows = q.offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": n.id,
+                "created_at": n.created_at.isoformat() if n.created_at else None,
+                "created_by": n.created_by,
+                "kind": n.kind,
+                "invoice_id": n.invoice_id, "program_id": n.program_id,
+                "buyer_id": n.buyer_id, "seller_id": n.seller_id,
+                "product": n.product,
+                "original_decision": n.original_decision,
+                "final_decision": n.final_decision,
+                "original_reason": n.original_reason,
+                "human_explanation": n.human_explanation,
+                "invoice_amount_usd": n.invoice_amount_usd,
+            }
+            for n in rows
+        ],
+    }
 
 
 @app.get("/api/invoices/{invoice_id}")

@@ -7,13 +7,16 @@ follows the same contract:
     * human message containing a JSON ``facts`` blob
     * structured output — a Pydantic schema the caller can rely on
 
-The LLM is only called when ``config.OPENAI_API_KEY`` is set. When it is not
-set (for example in CI / offline demos), :func:`safe_structured_call` returns
-``None`` and the caller uses its deterministic fallback. Under no
-circumstances does an LLM output change the guardrails enforced in the tools
-themselves (spec §1 program max $100M, spec §2 hierarchical invariant, spec
-§3 SCF Marvel parity) — the LLM's role is to *explain* and *recommend*; the
-tools are the final source of truth.
+SCF Wonder runs in **strict LLM mode**: every credit decision requires a
+successful OpenAI call. If the LLM cannot be reached (no API key, network
+error, schema validation failure …) :class:`LLMUnavailable` is raised and
+the API responds ``503 "Couldn't call the OpenAI API"``. The only exception
+is the seed script, which bypasses the LLM with ``seed_mode=True`` so that
+booting the demo is fast.
+
+Guardrails ($100M program ceiling, hierarchical invariant, named-major
+floors, revenue pins) are always enforced in Python *after* the LLM output —
+the LLM's role is to *decide*, Python's role is to *enforce policy limits*.
 """
 from __future__ import annotations
 
@@ -33,8 +36,28 @@ _llm_singleton = None
 T = TypeVar("T", bound=BaseModel)
 
 
+class LLMUnavailable(RuntimeError):
+    """Raised when the platform couldn't successfully call the OpenAI API.
+
+    The HTTP layer maps this to ``503 Service Unavailable`` with the body
+    ``{"error": "llm_unavailable", "message": "Couldn't call the OpenAI API ..."}``.
+    """
+
+    def __init__(self, label: str, cause: Optional[BaseException] = None):
+        self.label = label
+        self.cause = cause
+        detail = (
+            f"no OPENAI_API_KEY configured" if not config.llm_enabled()
+            else str(cause) if cause is not None
+            else "unknown error"
+        )
+        super().__init__(
+            f"Couldn't call the OpenAI API for '{label}' ({detail})."
+        )
+
+
 def get_llm():
-    """Return a cached ChatOpenAI client, or None when no API key is set."""
+    """Return a cached ChatOpenAI client, or ``None`` when no API key is set."""
     global _llm_singleton
     if not config.llm_enabled():
         return None
@@ -54,6 +77,35 @@ def get_llm():
     return _llm_singleton
 
 
+def structured_call(
+    system_prompt: str,
+    human_prompt: str,
+    schema: Type[T],
+    *,
+    label: str = "llm_call",
+) -> T:
+    """Invoke the LLM with structured output — strict mode.
+
+    Raises :class:`LLMUnavailable` if the call fails for any reason
+    (missing API key, network timeout, schema validation, etc).
+    """
+    llm = get_llm()
+    if llm is None:
+        raise LLMUnavailable(label)
+    try:
+        structured = llm.with_structured_output(schema)
+        msg = structured.invoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": human_prompt},
+        ])
+    except Exception as exc:
+        log.warning("%s failed: %s", label, exc)
+        raise LLMUnavailable(label, exc) from exc
+    if msg is None:
+        raise LLMUnavailable(label)
+    return msg
+
+
 def safe_structured_call(
     system_prompt: str,
     human_prompt: str,
@@ -61,20 +113,12 @@ def safe_structured_call(
     *,
     label: str = "llm_call",
 ) -> Optional[T]:
-    """Invoke the LLM with structured output. Returns None on any error so
-    the caller can fall back to its deterministic path."""
-    llm = get_llm()
-    if llm is None:
-        return None
+    """Best-effort variant that returns ``None`` instead of raising. Kept for
+    non-critical narration (Orchestrator summary, Onboarding rationale) where
+    a missing blurb is not worth failing the request."""
     try:
-        structured = llm.with_structured_output(schema)
-        msg = structured.invoke([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": human_prompt},
-        ])
-        return msg
-    except Exception as exc:
-        log.warning("%s failed, falling back to deterministic path: %s", label, exc)
+        return structured_call(system_prompt, human_prompt, schema, label=label)
+    except LLMUnavailable:
         return None
 
 
@@ -241,6 +285,46 @@ before the invoice can continue.
 # ---------------------------------------------------------------------------
 
 
+SYSTEM_FUNDING_AGENT = """\
+You are the **Funding Agent**, the last word on whether an individual
+invoice gets funded today. The Transaction, Credit Limit, Underwriter, and
+Review agents have already run. The invoice arrives with one of these
+statuses:
+
+  * STATUS=APPROVED — headroom OK, ratings OK, pricing set.
+  * STATUS=REVIEW   — a program-limit overage was cleared by Review.
+  * STATUS=REJECTED — an upstream agent turned it down (rating cutoff,
+                     hierarchical limit, review denial, etc.).
+
+Decision space: FUND or DO_NOT_FUND, plus a 1-2 sentence rationale.
+
+Decision policy:
+  1. Default to FUND for APPROVED and REVIEW-cleared invoices *unless* you
+     see a red flag in the joint risk profile or a CONFIRMED override
+     precedent that warrants holding back.
+  2. For REJECTED invoices, default to DO_NOT_FUND — but you have a
+     narrow learning escape hatch:
+        - You MAY return FUND for a REJECTED invoice ONLY when ALL of these hold:
+            (a) The facts include at least one `relevant_human_overrides`
+                entry with `kind = "OVERRIDE_APPROVED"` that applies to
+                the same buyer OR seller.
+            (b) The precedent's `human_explanation` addresses the same
+                kind of concern as the current rejection reason.
+            (c) The invoice USD amount is at or below the precedent's
+                `invoice_amount_usd` (or within 20% of it). This keeps
+                the learning narrow — a human approval of an $18k
+                invoice does not authorise a $10M invoice.
+        - In every other case: DO_NOT_FUND.
+     When you invoke this escape hatch, set `precedent_cited` to the
+     precedent note id (e.g. "note#1") and mirror the operator's reasoning
+     in your own rationale.
+  3. Never contradict the $100M platform ceiling or hierarchical limit
+     signals — those are already respected by the time you see the facts.
+
+Return ONLY the structured output.
+"""
+
+
 class RatingAnalystResult(BaseModel):
     rating: str                   # "AAA" | "AA" | ... | "CCC"
     pd_1y: float                  # decimal, e.g. 0.0032
@@ -258,6 +342,12 @@ class ReviewRecommendation(BaseModel):
     decision: str                 # "TEMP_INCREASE" | "DENY"
     temp_increase_amount_usd: float = 0.0
     rationale: str
+
+
+class FundingDecision(BaseModel):
+    decision: str                 # "FUND" | "DO_NOT_FUND"
+    rationale: str
+    precedent_cited: Optional[str] = None   # id or summary of the override that drove this, if any
 
 
 class OnboardingSummary(BaseModel):

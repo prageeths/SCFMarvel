@@ -62,6 +62,7 @@ def build_graph(db: Session):
     builder.add_node("limit_check", nodes.make_limit_check_node(db))
     builder.add_node("review", nodes.make_review_node(db))
     builder.add_node("approve", nodes.make_approve_node(db))
+    builder.add_node("funding", nodes.make_funding_node(db))
     builder.add_node("finalise", nodes.make_finalise_node(db))
 
     builder.set_entry_point("orchestrator")
@@ -71,57 +72,52 @@ def build_graph(db: Session):
         return state.get("next_step") or "finalise"
 
     builder.add_conditional_edges(
-        "orchestrator",
-        _route,
+        "orchestrator", _route,
         {
             "onboard_seller": "onboarding_agent",
-            "rejected": "finalise",
+            "rejected": "funding",   # go via Funding Agent even on early rejection
         },
     )
     builder.add_conditional_edges(
-        "onboarding_agent",
-        _route,
+        "onboarding_agent", _route,
         {
             "create_invoice": "create_invoice",
-            "rejected": "finalise",
+            "rejected": "funding",
         },
     )
     builder.add_edge("create_invoice", "ensure_limits")
     builder.add_edge("ensure_limits", "find_program")
     builder.add_conditional_edges(
-        "find_program",
-        _route,
+        "find_program", _route,
         {
             "limit_check": "limit_check",
             "underwrite_program": "underwrite_program",
         },
     )
     builder.add_conditional_edges(
-        "underwrite_program",
-        _route,
+        "underwrite_program", _route,
         {
             "limit_check": "limit_check",
-            "rejected": "finalise",
+            "rejected": "funding",
         },
     )
     builder.add_conditional_edges(
-        "limit_check",
-        _route,
+        "limit_check", _route,
         {
             "approve": "approve",
             "review": "review",
-            "rejected": "finalise",
+            "rejected": "funding",
         },
     )
     builder.add_conditional_edges(
-        "review",
-        _route,
+        "review", _route,
         {
             "approve": "approve",
-            "rejected": "finalise",
+            "rejected": "funding",
         },
     )
-    builder.add_edge("approve", "finalise")
+    builder.add_edge("approve", "funding")
+    builder.add_edge("funding", "finalise")
     builder.add_edge("finalise", END)
 
     return builder.compile()

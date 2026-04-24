@@ -141,6 +141,33 @@ class Invoice(Base):
     events = relationship("AgentEvent", back_populates="invoice", cascade="all, delete-orphan")
 
 
+class LearningNote(Base):
+    """A human override that teaches the agents. Surfaced to every LLM
+    decision via the context layer."""
+
+    __tablename__ = "learning_notes"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=_dt.datetime.utcnow, index=True)
+    created_by = Column(String(128), default="operator")
+    kind = Column(String(32), nullable=False)  # OVERRIDE_APPROVED / OVERRIDE_CONFIRMED / MANUAL_NOTE
+
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=True, index=True)
+    buyer_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
+    seller_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
+    product = Column(String(32), nullable=True)
+
+    original_decision = Column(String(32))   # e.g. "REJECTED"
+    final_decision = Column(String(32))      # "FUNDED" | "REJECTED"
+    original_reason = Column(Text)           # agent reason that was overridden
+    human_explanation = Column(Text, nullable=False)
+    invoice_amount_usd = Column(Float)
+    notes = Column(Text)
+
+    invoice = relationship("Invoice", foreign_keys=[invoice_id])
+
+
 class AgentEvent(Base):
     __tablename__ = "agent_events"
 

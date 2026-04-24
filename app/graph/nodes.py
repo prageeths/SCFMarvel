@@ -41,6 +41,7 @@ from ..tools.credit_limit_tools import (
 )
 from ..tools.transaction_tools import tool_find_program, tool_price_invoice
 from ..tools.review_tools import tool_decide_overage
+from ..tools.funding_tools import tool_decide_funding
 from .state import WonderState
 
 
@@ -727,6 +728,69 @@ def make_approve_node(db: Session) -> Callable[[WonderState], Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # 9. Finalise node (writes back status even on rejection / commits session)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 10. Funding Agent — last-word fund/no-fund decision on every request.
+# ---------------------------------------------------------------------------
+
+def make_funding_node(db: Session) -> Callable[[WonderState], Dict[str, Any]]:
+    def funding(state: WonderState) -> Dict[str, Any]:
+        invoice_id = state.get("invoice_id")
+        if invoice_id is None:
+            # No invoice was created (early rejection before create_invoice).
+            return _append_trace(
+                "funding_agent",
+                "Skipped — no invoice row exists (rejected before creation).",
+            )
+        res = tool_decide_funding(db, invoice_id=invoice_id)
+        tc = [{
+            "node": "funding_agent", "tool": "decide_funding",
+            "args": {"invoice_id": invoice_id}, "result": res,
+            "timestamp": _dt.datetime.utcnow().isoformat(),
+        }]
+        msg = f"Funding Agent: {res['decision']}. {res['rationale']}"
+        if res.get("precedent_cited"):
+            msg += f"\n• Precedent cited: {res['precedent_cited']}"
+        invoice = db.query(models.Invoice).get(invoice_id)
+        prior_status = invoice.status
+        if res["decision"] == "FUND":
+            # Normal fund path (APPROVED/REVIEW) OR the Funding Agent's
+            # learning escape hatch (FUND despite prior REJECTED — only
+            # possible when a precedent override was cited).
+            if prior_status == "REJECTED" and res.get("precedent_cited"):
+                # Re-price the invoice if we never did.
+                if (invoice.fee_usd or 0.0) <= 0.0:
+                    from ..tools.transaction_tools import tool_price_invoice
+                    tool_price_invoice(db, invoice_id=invoice.id)
+                    invoice = db.query(models.Invoice).get(invoice_id)
+                invoice.status = "FUNDED"
+                invoice.decision_reason = (
+                    (invoice.decision_reason or "")
+                    + "\n\nFunding Agent learning-escape: " + res["rationale"]
+                    + f" (precedent: {res.get('precedent_cited')})"
+                ).strip()
+            elif prior_status == "REJECTED":
+                # Model tried to FUND without precedent — refuse, this is
+                # what the system prompt forbids. Hold the rejection.
+                invoice.decision_reason = (
+                    (invoice.decision_reason or "")
+                    + "\n\nFunding Agent attempted to fund without precedent; held rejection."
+                ).strip()
+            else:
+                invoice.status = "FUNDED"
+        elif res["decision"] == "DO_NOT_FUND":
+            if prior_status not in ("REJECTED",):
+                invoice.status = "DO_NOT_FUND"
+                invoice.decision_reason = (
+                    (invoice.decision_reason or "") + "\n"
+                    + "Funding Agent held the invoice: " + res["rationale"]
+                ).strip()
+        updates = {"tool_calls": tc, "status": invoice.status,
+                   "decision_reason": invoice.decision_reason}
+        updates.update(_append_trace("funding_agent", msg))
+        return updates
+    return funding
+
 
 def make_finalise_node(db: Session) -> Callable[[WonderState], Dict[str, Any]]:
     def finalise(state: WonderState) -> Dict[str, Any]:

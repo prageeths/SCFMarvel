@@ -1,0 +1,60 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-wf-cream text-wf-ink antialiased;
+    background-image:
+      radial-gradient(circle at 12% -10%, rgba(215, 30, 43, 0.06), transparent 40%),
+      radial-gradient(circle at 100% 0%, rgba(255, 205, 65, 0.12), transparent 35%);
+    background-attachment: fixed;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-wf-line bg-white shadow-card;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-wf-red text-white hover:bg-wf-redDark focus:ring-wf-red/40;
+  }
+  .btn-gold {
+    @apply btn bg-wf-gold text-wf-ink hover:bg-wf-goldDark focus:ring-wf-gold/50;
+  }
+  .btn-ghost {
+    @apply btn border border-wf-line bg-white text-wf-charcoal hover:bg-wf-sand;
+  }
+  .label {
+    @apply text-[11px] font-semibold uppercase tracking-wide text-wf-slate;
+  }
+  .input {
+    @apply w-full rounded-lg border border-wf-line bg-white px-3 py-2 text-sm text-wf-ink placeholder:text-wf-slate/60 focus:border-wf-red focus:outline-none focus:ring-2 focus:ring-wf-red/20;
+  }
+}
+
+/* thin custom scrollbar */
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(42, 37, 34, 0.18);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}

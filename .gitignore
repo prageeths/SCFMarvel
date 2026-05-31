@@ -10,3 +10,16 @@ data/*.db
 .idea/
 .vscode/
 .pytest_cache/
+
+# Node / frontend build
+node_modules/
+dist/
+*.local
+.eslintcache
+
+# App data
+data/
+scf-intake/backend/data/
+
+# TS build info
+*.tsbuildinfo

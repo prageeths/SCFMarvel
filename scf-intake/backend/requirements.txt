@@ -1,0 +1,16 @@
+# Core service
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+SQLAlchemy==2.0.36
+
+# Agent orchestration / LLM tooling (optional at runtime).
+# The agents run deterministically with NO key; install + set OPENAI_API_KEY
+# to enable the LLM-backed validation/justification path behind the adapter.
+langgraph==0.2.60 ; python_version >= "3.10"
+langchain-core==0.3.28 ; python_version >= "3.10"
+langchain-openai==0.2.14 ; python_version >= "3.10"
+
+# Test
+pytest==8.3.4
+httpx==0.28.1

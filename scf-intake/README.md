@@ -116,16 +116,30 @@ production paths, set values in `.env` (see `.env.example`):
 
 ---
 
-## Deployment
+## Deployment → public URL
 
-Pushing to `main` (or any `cursor/**` branch) triggers
-[`deploy-intake-pages.yml`](../.github/workflows/deploy-intake-pages.yml), which
-builds `frontend/` with `VITE_BASE=/SCFMarvel/` and publishes it to GitHub Pages
-at **https://prageeths.github.io/SCFMarvel/**.
+The production URL is **https://prageeths.github.io/SCFMarvel/** (GitHub Pages,
+public repo). Everything needed to serve it is already pushed; GitHub Pages just
+has to be turned on once, because enabling Pages requires repository‑admin
+permission that an automated agent token does not hold.
+
+**One‑time enablement (≈1 minute), pick either option:**
+
+- **Fastest — serve the prebuilt branch:** Repo **Settings → Pages → Build and
+  deployment → Source: _Deploy from a branch_ → Branch: `gh-pages` / `/ (root)` →
+  Save.** The built site is already on the `gh-pages` branch, so it goes live
+  almost immediately. _(Re‑run `VITE_BASE=/SCFMarvel/ npm run build` and push the
+  `dist/` contents to `gh-pages` to update it.)_
+
+- **Auto‑updating — GitHub Actions:** Repo **Settings → Pages → Source:
+  _GitHub Actions_.** Then the included
+  [`deploy-intake-pages.yml`](../.github/workflows/deploy-intake-pages.yml)
+  workflow builds `frontend/` (`VITE_BASE=/SCFMarvel/`) and redeploys on every
+  push to `main` / `cursor/**`. (Ensure repo **Settings → Actions → Workflow
+  permissions** allows read/write.)
 
 The FastAPI backend is container‑ready for any platform (Render, Fly.io, Cloud
-Run, ECS); set the environment variables above and run
-`uvicorn app.main:app`.
+Run, ECS); set the environment variables above and run `uvicorn app.main:app`.
 
 ---
 
